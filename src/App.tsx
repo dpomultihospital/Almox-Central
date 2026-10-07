@@ -1,0 +1,472 @@
+import React, { useState, useEffect, useCallback } from 'react';
+import { Sidebar } from './components/Sidebar.tsx';
+import { TopBar } from './components/TopBar.tsx';
+import { LoginView } from './components/LoginView.tsx';
+import { ModuleGridView } from './components/ModuleGridView.tsx';
+import { DashboardView } from './components/DashboardView.tsx';
+import { RequisicoesView } from './components/RequisicoesView.tsx';
+import { EmprestimosView } from './components/EmprestimosView.tsx';
+import { EntradasView } from './components/EntradasView.tsx';
+import { ProdutosView } from './components/ProdutosView.tsx';
+import { MovimentacoesView } from './components/MovimentacoesView.tsx';
+import { CentrosCustoView } from './components/CentrosCustoView.tsx';
+import { UsuariosView } from './components/UsuariosView.tsx';
+import { RelatoriosView } from './components/RelatoriosView.tsx';
+import { PerfilView } from './components/PerfilView.tsx';
+import { DocumentacaoView } from './components/DocumentacaoView.tsx';
+import { SecurityPasswordModal } from './components/SecurityPasswordModal.tsx';
+import { BackupView } from './components/BackupView.tsx';
+import { BackupConfirmationModal } from './components/BackupConfirmationModal.tsx';
+import type { 
+  Usuario, 
+  CentroCusto, 
+  Produto, 
+  Requisicao, 
+  Emprestimo, 
+  Movimentacao, 
+  DashboardStats,
+  EmpresaUnidade
+} from './types/index.ts';
+
+export default function App() {
+  // Estado de Autenticação e Sessão
+  const [currentUser, setCurrentUser] = useState<Usuario | null>(null);
+  const [activeUnidadeId, setActiveUnidadeId] = useState<number>(1);
+  const [unidades, setUnidades] = useState<EmpresaUnidade[]>([]);
+  const [showSecurityModal, setShowSecurityModal] = useState<boolean>(false);
+  const [isBackupModalOpen, setIsBackupModalOpen] = useState<boolean>(false);
+
+  // Navegação: Modo Grade vs Tela de Módulo
+  const [isGridView, setIsGridView] = useState<boolean>(true);
+  const [currentTab, setCurrentTab] = useState<string>('dashboard');
+
+  // Dados do Sistema
+  const [centrosCusto, setCentrosCusto] = useState<CentroCusto[]>([]);
+  const [usuarios, setUsuarios] = useState<Usuario[]>([]);
+  const [produtos, setProdutos] = useState<Produto[]>([]);
+  const [requisicoes, setRequisicoes] = useState<Requisicao[]>([]);
+  const [emprestimos, setEmprestimos] = useState<Emprestimo[]>([]);
+  const [movimentacoes, setMovimentacoes] = useState<Movimentacao[]>([]);
+  const [stats, setStats] = useState<DashboardStats | null>(null);
+
+  // Modais de Criação Rápida
+  const [isNovaRequisicaoOpen, setIsNovaRequisicaoOpen] = useState<boolean>(false);
+  const [isNovaEntradaOpen, setIsNovaEntradaOpen] = useState<boolean>(false);
+  const [isNovoEmprestimoOpen, setIsNovoEmprestimoOpen] = useState<boolean>(false);
+
+  // Carrega todas as unidades cadastradas
+  const loadUnidades = useCallback(async () => {
+    try {
+      const res = await fetch('/api/empresas-unidades');
+      if (res.ok) {
+        const data = await res.json();
+        setUnidades(data);
+      }
+    } catch (err) {
+      console.error('Erro ao buscar unidades:', err);
+    }
+  }, []);
+
+  // Carrega dados gerais sincronizados com o servidor SQLite (sem loop de re-render)
+  const currentUserId = currentUser?.id ?? null;
+
+  const loadData = useCallback(async (overrideUserId?: number) => {
+    try {
+      const storedUserId = localStorage.getItem('multi_almox_user_id');
+      const effectiveUserId = overrideUserId ?? currentUserId ?? (storedUserId ? Number(storedUserId) : null);
+
+      if (!effectiveUserId) {
+        return;
+      }
+
+      const authHeader: Record<string, string> = { 'Authorization': `user:${effectiveUserId}` };
+
+      const [
+        meRes,
+        statsRes,
+        usersRes,
+        ccRes,
+        prodRes,
+        reqRes,
+        empRes,
+        movRes
+      ] = await Promise.all([
+        fetch('/api/auth/me', { headers: authHeader }),
+        fetch('/api/dashboard/stats', { headers: authHeader }),
+        fetch('/api/usuarios', { headers: authHeader }),
+        fetch('/api/centros-custo', { headers: authHeader }),
+        fetch('/api/produtos?apenas_ativos=false', { headers: authHeader }),
+        fetch('/api/requisicoes', { headers: authHeader }),
+        fetch('/api/emprestimos', { headers: authHeader }),
+        fetch('/api/movimentacoes?limite=150', { headers: authHeader }),
+      ]);
+
+      // Ignora resposta se o usuário deslogou enquanto a requisição estava em andamento
+      if (!localStorage.getItem('multi_almox_user_id')) {
+        return;
+      }
+
+      if (meRes.ok) {
+        const meData = await meRes.json();
+        if (meData.user) {
+          setCurrentUser((prev) => {
+            if (
+              prev &&
+              prev.id === meData.user.id &&
+              prev.nome === meData.user.nome &&
+              prev.perfil === meData.user.perfil &&
+              prev.usando_senha_padrao === meData.user.usando_senha_padrao &&
+              prev.empresa_id === meData.user.empresa_id
+            ) {
+              return prev;
+            }
+            return meData.user;
+          });
+          if (meData.user.empresa_id) {
+            setActiveUnidadeId((prevId) => prevId || meData.user.empresa_id);
+          }
+          if (meData.user.login === 'admin' && meData.user.usando_senha_padrao) {
+            setShowSecurityModal(true);
+          }
+        }
+      } else {
+        localStorage.removeItem('multi_almox_user_id');
+        setCurrentUser(null);
+        return;
+      }
+
+      if (statsRes.ok) setStats(await statsRes.json());
+      if (usersRes.ok) setUsuarios(await usersRes.json());
+      if (ccRes.ok) setCentrosCusto(await ccRes.json());
+      if (prodRes.ok) setProdutos(await prodRes.json());
+      if (reqRes.ok) setRequisicoes(await reqRes.json());
+      if (empRes.ok) setEmprestimos(await empRes.json());
+      if (movRes.ok) setMovimentacoes(await movRes.json());
+    } catch (err) {
+      console.error('Erro ao sincronizar dados com o servidor:', err);
+    }
+  }, [currentUserId]);
+
+  useEffect(() => {
+    loadUnidades();
+    loadData();
+  }, [loadUnidades, loadData]);
+
+  // Unidade ativa atual
+  const activeUnidade = unidades.find((u) => u.id === activeUnidadeId) || unidades[0] || null;
+
+  // Ação de Login Formal
+  const handleLoginSuccess = (user: Usuario, unidadeId: number) => {
+    localStorage.setItem('multi_almox_user_id', String(user.id));
+    setCurrentUser(user);
+    setActiveUnidadeId(unidadeId);
+    setIsGridView(true);
+    setCurrentTab('dashboard');
+    if (user.login === 'admin' && user.usando_senha_padrao) {
+      setShowSecurityModal(true);
+    } else {
+      setShowSecurityModal(false);
+    }
+    loadData(user.id);
+  };
+
+  // Encerrar sessão (obrigatório para trocar de usuário)
+  const handleLogout = () => {
+    localStorage.removeItem('multi_almox_user_id');
+    setCurrentUser(null);
+    setShowSecurityModal(false);
+    setIsBackupModalOpen(false);
+    setIsNovaRequisicaoOpen(false);
+    setIsNovaEntradaOpen(false);
+    setIsNovoEmprestimoOpen(false);
+    setIsGridView(true);
+    setCurrentTab('dashboard');
+  };
+
+  // Seleção de Módulo a partir do Grid
+  const handleSelectModuleFromGrid = (moduleId: string) => {
+    if (moduleId === 'aprovacao-requisicoes') {
+      setCurrentTab('requisicoes');
+    } else {
+      setCurrentTab(moduleId);
+    }
+    setIsGridView(false);
+  };
+
+  // Reset do banco de dados para estado limpo inicial
+  const handleResetDb = async () => {
+    if (!window.confirm('Tem certeza de que deseja restaurar a base SQLite para o estado inicial limpo (apenas o usuário admin)?')) {
+      return;
+    }
+
+    try {
+      const res = await fetch('/api/system/reset', {
+        method: 'POST',
+        headers: { 'Authorization': `user:${currentUser?.id}` },
+      });
+      const data = await res.json();
+      if (res.ok) {
+        alert(data.message || 'Banco de dados restaurado para o estado limpo inicial.');
+        loadUnidades();
+        loadData();
+      } else {
+        alert(data.error || 'Erro ao restaurar banco.');
+      }
+    } catch (err) {
+      alert('Falha ao comunicar com o servidor.');
+    }
+  };
+
+  // Contadores para alertas de badges
+  const pendingReqCount = stats?.kpis?.requisicoes_pendentes ?? requisicoes.filter((r) => r.status === 'pendente').length;
+  const overdueLoanCount = stats?.kpis?.emprestimos_atrasados ?? emprestimos.filter((e) => e.status === 'atrasado').length;
+  const lowStockCount = stats?.kpis?.itens_estoque_baixo ?? produtos.filter((p) => p.ativo !== 0 && p.quantidade_atual <= p.estoque_minimo).length;
+
+  // =========================================================================
+  // 1. SE NÃO ESTIVER AUTENTICADO: EXIBE TELA DE LOGIN EM 2 COLUNAS
+  // =========================================================================
+  if (!currentUser) {
+    return (
+      <LoginView
+        unidades={unidades}
+        onLoginSuccess={handleLoginSuccess}
+      />
+    );
+  }
+
+  // =========================================================================
+  // 2. SE ESTIVER NO MODO GRADE: EXIBE O DASHBOARD EM GRID DE MÓDULOS
+  // =========================================================================
+  if (isGridView) {
+    return (
+      <>
+        <ModuleGridView
+          currentUser={currentUser}
+          activeUnidade={activeUnidade}
+          produtos={produtos}
+          requisicoes={requisicoes}
+          requisicoesPendentesCount={pendingReqCount}
+          emprestimosAtrasadosCount={overdueLoanCount}
+          itensEstoqueBaixoCount={lowStockCount}
+          onSelectModule={handleSelectModuleFromGrid}
+          onLogout={handleLogout}
+        />
+        {showSecurityModal && (
+          <SecurityPasswordModal
+            currentUser={currentUser}
+            isOpen={showSecurityModal}
+            onClose={() => setShowSecurityModal(false)}
+            onPasswordChanged={() => {
+              loadData();
+              setShowSecurityModal(false);
+            }}
+          />
+        )}
+      </>
+    );
+  }
+
+  // =========================================================================
+  // 3. SE ESTIVER DENTRO DE UM MÓDULO: EXIBE A INTERFACE DE TRABALHO
+  // =========================================================================
+  return (
+    <div className="flex h-screen w-screen overflow-hidden bg-[#f8f9fa] font-sans antialiased text-slate-800">
+      {/* Barra Lateral com Módulos */}
+      <Sidebar
+        currentTab={currentTab}
+        onSelectTab={(tab) => setCurrentTab(tab)}
+        currentUser={currentUser}
+        activeUnidade={activeUnidade}
+        onGoToGrid={() => setIsGridView(true)}
+        onLogout={handleLogout}
+        pendingRequisitionsCount={pendingReqCount}
+        overdueLoansCount={overdueLoanCount}
+        lowStockCount={lowStockCount}
+      />
+
+      {/* Conteúdo Principal com Barra Superior */}
+      <div className="flex flex-col flex-1 min-w-0 h-full overflow-hidden">
+        <TopBar
+          currentTab={currentTab}
+          currentUser={currentUser}
+          activeUnidade={activeUnidade}
+          produtos={produtos}
+          requisicoes={requisicoes}
+          onSelectTab={(tab) => setCurrentTab(tab)}
+          onOpenNovaRequisicao={() => {
+            setCurrentTab('requisicoes');
+            setIsNovaRequisicaoOpen(true);
+          }}
+          onOpenNovaEntrada={() => {
+            setCurrentTab('entradas');
+            setIsNovaEntradaOpen(true);
+          }}
+          onOpenNovoEmprestimo={() => {
+            setCurrentTab('emprestimos');
+            setIsNovoEmprestimoOpen(true);
+          }}
+          onResetDb={handleResetDb}
+          onGoToGrid={() => setIsGridView(true)}
+          onLogout={handleLogout}
+          onOpenBackupModal={() => setIsBackupModalOpen(true)}
+        />
+
+        <main className="flex-1 overflow-y-auto p-6">
+          {currentTab === 'dashboard' && (
+            <DashboardView
+              stats={stats}
+              onNavigate={(tab) => {
+                if (tab === 'grid') {
+                  setIsGridView(true);
+                } else {
+                  setCurrentTab(tab);
+                }
+              }}
+              currentUser={currentUser}
+              onOpenNovaEntrada={() => {
+                setCurrentTab('entradas');
+                setIsNovaEntradaOpen(true);
+              }}
+              onOpenNovaRequisicao={() => {
+                setCurrentTab('requisicoes');
+                setIsNovaRequisicaoOpen(true);
+              }}
+            />
+          )}
+
+          {currentTab === 'requisicoes' && (
+            <RequisicoesView
+              requisicoes={requisicoes}
+              produtos={produtos}
+              centrosCusto={centrosCusto}
+              currentUser={currentUser}
+              onRefresh={loadData}
+              isCreateModalOpen={isNovaRequisicaoOpen}
+              setIsCreateModalOpen={setIsNovaRequisicaoOpen}
+              onVoltar={() => setIsGridView(true)}
+            />
+          )}
+
+          {currentTab === 'emprestimos' && (
+            <EmprestimosView
+              emprestimos={emprestimos}
+              produtos={produtos}
+              centrosCusto={centrosCusto}
+              currentUser={currentUser}
+              onRefresh={loadData}
+              isCreateModalOpen={isNovoEmprestimoOpen}
+              setIsCreateModalOpen={setIsNovoEmprestimoOpen}
+              onVoltar={() => setIsGridView(true)}
+            />
+          )}
+
+          {currentTab === 'entradas' && (
+            <EntradasView
+              produtos={produtos}
+              movimentacoes={movimentacoes}
+              currentUser={currentUser}
+              onRefresh={loadData}
+              isCreateModalOpen={isNovaEntradaOpen}
+              setIsCreateModalOpen={setIsNovaEntradaOpen}
+              onVoltar={() => setIsGridView(true)}
+            />
+          )}
+
+          {currentTab === 'produtos' && (
+            <ProdutosView
+              produtos={produtos}
+              currentUser={currentUser}
+              onRefresh={loadData}
+              onVoltar={() => setIsGridView(true)}
+            />
+          )}
+
+          {currentTab === 'movimentacoes' && (
+            <MovimentacoesView
+              movimentacoes={movimentacoes}
+              currentUser={currentUser}
+              onRefresh={loadData}
+            />
+          )}
+
+          {currentTab === 'centros-custo' && (
+            <CentrosCustoView
+              centrosCusto={centrosCusto}
+              unidades={unidades}
+              currentUser={currentUser}
+              onRefresh={loadData}
+              onVoltar={() => setIsGridView(true)}
+            />
+          )}
+
+          {currentTab === 'usuarios' && (
+            <UsuariosView
+              usuarios={usuarios}
+              centrosCusto={centrosCusto}
+              unidades={unidades}
+              currentUser={currentUser}
+              onRefresh={loadData}
+              onVoltar={() => setIsGridView(true)}
+            />
+          )}
+
+          {currentTab === 'relatorios' && (
+            <RelatoriosView
+              centrosCusto={centrosCusto}
+              produtos={produtos}
+              movimentacoes={movimentacoes}
+              activeUnidade={activeUnidade}
+              currentUser={currentUser}
+              onVoltar={() => setIsGridView(true)}
+            />
+          )}
+
+          {currentTab === 'perfil' && (
+            <PerfilView
+              currentUser={currentUser}
+              unidades={unidades}
+              activeUnidade={activeUnidade}
+              onSelectUnidade={(uid) => setActiveUnidadeId(uid)}
+              onVoltar={() => setIsGridView(true)}
+              onOpenBackupModal={() => setIsBackupModalOpen(true)}
+            />
+          )}
+
+          {currentTab === 'backup' && currentUser?.perfil === 'admin' && (
+            <BackupView
+              currentUser={currentUser}
+              onVoltar={() => setIsGridView(true)}
+            />
+          )}
+
+          {currentTab === 'documentacao' && (
+            <DocumentacaoView
+              currentUser={currentUser}
+              onRefreshDb={handleResetDb}
+            />
+          )}
+        </main>
+      </div>
+
+      {showSecurityModal && (
+        <SecurityPasswordModal
+          currentUser={currentUser}
+          isOpen={showSecurityModal}
+          onClose={() => setShowSecurityModal(false)}
+          onPasswordChanged={() => {
+            loadData();
+            setShowSecurityModal(false);
+          }}
+        />
+      )}
+
+      {currentUser && currentUser.perfil === 'admin' && (
+        <BackupConfirmationModal
+          currentUser={currentUser}
+          isOpen={isBackupModalOpen}
+          onClose={() => setIsBackupModalOpen(false)}
+        />
+      )}
+    </div>
+  );
+}
