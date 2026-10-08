@@ -19,6 +19,8 @@ import {
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import { ConsumoMensalChart } from './ConsumoMensalChart.tsx';
+import { finalizeJsPDF, type PdfGeneratedDocument, type PdfOutputMode } from '../utils/pdfGenerator.ts';
+import { PdfPrintModal } from './PdfPrintModal.tsx';
 import type { CentroCusto, Produto, Movimentacao, EmpresaUnidade, Usuario } from '../types/index.ts';
 
 interface RelatoriosViewProps {
@@ -71,6 +73,7 @@ export const RelatoriosView: React.FC<RelatoriosViewProps> = ({
   const [loadingReport, setLoadingReport] = useState(false);
   const [exportingPdfId, setExportingPdfId] = useState<string | null>(null);
   const [exportingExecutivePdf, setExportingExecutivePdf] = useState(false);
+  const [pdfPreviewDoc, setPdfPreviewDoc] = useState<PdfGeneratedDocument | null>(null);
   const [feedbackBanner, setFeedbackBanner] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
 
   const showFeedback = (type: 'success' | 'error', message: string) => {
@@ -221,8 +224,12 @@ export const RelatoriosView: React.FC<RelatoriosViewProps> = ({
     }
   };
 
-  const handlePrint = () => {
-    window.print();
+  const handlePrint = async () => {
+    if (reportResult && selectedReportId) {
+      await generateReportPDF(reportResult, selectedReportId, 'print');
+    } else {
+      window.print();
+    }
   };
 
   const handleExportCSV = () => {
@@ -243,9 +250,13 @@ export const RelatoriosView: React.FC<RelatoriosViewProps> = ({
   };
 
   // =========================================================================
-  // 1. EXPORTAÇÃO EM PDF DE QUALQUER RELATÓRIO INDIVIDUAL
+  // 1. EXPORTAÇÃO OU IMPRESSÃO DIRETA EM PDF DE QUALQUER RELATÓRIO INDIVIDUAL
   // =========================================================================
-  const generateReportPDF = async (dataToExport: any, reportIdSlug: string) => {
+  const generateReportPDF = async (
+    dataToExport: any,
+    reportIdSlug: string,
+    mode: PdfOutputMode = 'download'
+  ) => {
     if (!dataToExport || !dataToExport.colunas) return;
 
     const isWide = dataToExport.colunas.length > 6;
@@ -394,8 +405,18 @@ export const RelatoriosView: React.FC<RelatoriosViewProps> = ({
       doc.text(`Página ${i} de ${totalPages}`, pageWidth - 14, pageHeight - 8, { align: 'right' });
     }
 
-    doc.save(`${reportIdSlug}_${new Date().toISOString().slice(0, 10)}.pdf`);
-    showFeedback('success', `Relatório "${dataToExport.titulo || reportIdSlug}" exportado em PDF com sucesso.`);
+    const filename = `${reportIdSlug}_${new Date().toISOString().slice(0, 10)}.pdf`;
+    const generated = finalizeJsPDF(
+      doc,
+      filename,
+      String(dataToExport.titulo || reportIdSlug),
+      mode
+    );
+    if (mode === 'print') {
+      setPdfPreviewDoc(generated);
+    } else {
+      showFeedback('success', `Relatório "${dataToExport.titulo || reportIdSlug}" exportado em PDF com sucesso.`);
+    }
   };
 
   // Botão rápido de exportar PDF diretamente na linha do relatório
@@ -1282,6 +1303,11 @@ export const RelatoriosView: React.FC<RelatoriosViewProps> = ({
           </div>
         </div>
       )}
+
+      <PdfPrintModal
+        pdfDoc={pdfPreviewDoc}
+        onClose={() => setPdfPreviewDoc(null)}
+      />
     </div>
   );
 };

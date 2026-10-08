@@ -10,6 +10,7 @@ import {
   KeyRound
 } from 'lucide-react';
 import type { Usuario } from '../types/index.ts';
+import { useToast } from '../context/ToastContext.tsx';
 
 interface SecurityPasswordModalProps {
   currentUser: Usuario;
@@ -30,6 +31,7 @@ export const SecurityPasswordModal: React.FC<SecurityPasswordModalProps> = ({
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
+  const { toast } = useToast();
 
   if (!isOpen) return null;
 
@@ -73,12 +75,15 @@ export const SecurityPasswordModal: React.FC<SecurityPasswordModalProps> = ({
       }
 
       setSuccessMsg('Senha alterada com sucesso! Suas credenciais foram atualizadas com segurança.');
+      toast.success('Senha Alterada com Sucesso', 'Suas credenciais de administrador foram atualizadas.');
       setTimeout(() => {
         onPasswordChanged();
         onClose();
-      }, 1500);
+      }, 1200);
     } catch (err: any) {
-      setErrorMsg(err.message || 'Falha de comunicação com o servidor.');
+      const msg = err.message || 'Falha de comunicação com o servidor.';
+      setErrorMsg(msg);
+      toast.error('Erro ao Alterar Senha', msg);
     } finally {
       setLoading(false);
     }

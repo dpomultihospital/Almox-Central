@@ -15,9 +15,12 @@ import {
   XCircle,
   Hospital,
   Activity,
-  Calendar
+  Calendar,
+  Trash2
 } from 'lucide-react';
 import type { CentroCusto, Usuario, EmpresaUnidade } from '../types/index.ts';
+import { useToast } from '../context/ToastContext.tsx';
+import { ConfirmDeleteModal } from './ConfirmDeleteModal.tsx';
 
 interface CentrosCustoViewProps {
   centrosCusto: CentroCusto[];
@@ -61,7 +64,9 @@ export const CentrosCustoView: React.FC<CentrosCustoViewProps> = ({
   const pageSize = 8;
   const [isProcessing, setIsProcessing] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [deletingCentro, setDeletingCentro] = useState<CentroCusto | null>(null);
 
+  const { toast } = useToast();
   const isAdmin = currentUser?.perfil === 'admin';
 
   // Filtragem dos registros
@@ -128,7 +133,9 @@ export const CentrosCustoView: React.FC<CentrosCustoViewProps> = ({
     }
 
     if (!formCodigo || !formNome || !formDepartamento || !formResponsavel) {
-      setErrorMsg('Código, nome, departamento e responsável são obrigatórios.');
+      const msg = 'Código, nome, departamento e responsável são obrigatórios.';
+      setErrorMsg(msg);
+      toast.error('Campos Obrigatórios', msg);
       setActiveFormTab('geral');
       return;
     }
@@ -163,10 +170,58 @@ export const CentrosCustoView: React.FC<CentrosCustoViewProps> = ({
         throw new Error(data.error || 'Erro ao salvar Centro de Custo.');
       }
 
+      if (formMode === 'create') {
+        toast.success(
+          'Centro de Custo Cadastrado',
+          `O setor "${payload.codigo} - ${payload.nome}" foi criado com sucesso.`
+        );
+      } else {
+        toast.success(
+          'Centro de Custo Atualizado',
+          `Os dados do setor "${payload.codigo} - ${payload.nome}" foram atualizados.`
+        );
+      }
+
       setIsFormOpen(false);
       onRefresh();
     } catch (err: any) {
-      setErrorMsg(err.message || 'Erro ao processar requisição.');
+      const msg = err.message || 'Erro ao processar requisição.';
+      setErrorMsg(msg);
+      toast.error(
+        formMode === 'create' ? 'Erro ao Criar Centro de Custo' : 'Erro ao Editar Centro de Custo',
+        msg
+      );
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  const handleConfirmDelete = async () => {
+    if (!deletingCentro) return;
+    setIsProcessing(true);
+    try {
+      const res = await fetch(`/api/centros-custo/${deletingCentro.id}`, {
+        method: 'DELETE',
+        headers: {
+          'Authorization': `user:${currentUser?.id}`,
+        },
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Erro ao excluir Centro de Custo.');
+      }
+
+      toast.success(
+        'Centro de Custo Excluído',
+        data.message || `O setor "${deletingCentro.codigo} - ${deletingCentro.nome}" foi excluído.`
+      );
+      if (editingId === deletingCentro.id) {
+        setIsFormOpen(false);
+      }
+      setDeletingCentro(null);
+      onRefresh();
+    } catch (err: any) {
+      toast.error('Erro ao Excluir Centro de Custo', err.message || 'Falha ao excluir registro.');
     } finally {
       setIsProcessing(false);
     }
@@ -392,26 +447,45 @@ export const CentrosCustoView: React.FC<CentrosCustoViewProps> = ({
             )}
 
             {/* Rodapé: SALVAR e VOLTAR */}
-            <div className="pt-4 border-t border-slate-200 flex items-center justify-end gap-3">
-              <button
-                type="button"
-                onClick={() => setIsFormOpen(false)}
-                className="bg-teal-600 hover:bg-teal-700 text-white font-medium px-4 py-2 rounded text-xs flex items-center gap-1.5 transition-all shadow uppercase tracking-wide cursor-pointer"
-              >
-                <ArrowLeft className="w-4 h-4" />
-                <span>VOLTAR</span>
-              </button>
+            <div className="pt-4 border-t border-slate-200 flex items-center justify-between gap-3">
+              <div>
+                {formMode === 'edit' && isAdmin && editingId && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const target = centrosCusto.find((c) => c.id === editingId);
+                      if (target) setDeletingCentro(target);
+                    }}
+                    disabled={isProcessing}
+                    className="bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 font-semibold px-4 py-2 rounded text-xs flex items-center gap-1.5 transition-all uppercase tracking-wide cursor-pointer disabled:opacity-50"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                    <span>EXCLUIR SETOR</span>
+                  </button>
+                )}
+              </div>
 
-              {formMode !== 'view' && (
+              <div className="flex items-center gap-3">
                 <button
-                  type="submit"
-                  disabled={isProcessing}
-                  className="bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white font-medium px-5 py-2 rounded text-xs flex items-center gap-1.5 transition-all shadow uppercase tracking-wide cursor-pointer disabled:opacity-50"
+                  type="button"
+                  onClick={() => setIsFormOpen(false)}
+                  className="bg-teal-600 hover:bg-teal-700 text-white font-medium px-4 py-2 rounded text-xs flex items-center gap-1.5 transition-all shadow uppercase tracking-wide cursor-pointer"
                 >
-                  <Save className="w-4 h-4" />
-                  <span>{isProcessing ? 'SALVANDO...' : 'SALVAR'}</span>
+                  <ArrowLeft className="w-4 h-4" />
+                  <span>VOLTAR</span>
                 </button>
-              )}
+
+                {formMode !== 'view' && (
+                  <button
+                    type="submit"
+                    disabled={isProcessing}
+                    className="bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white font-medium px-5 py-2 rounded text-xs flex items-center gap-1.5 transition-all shadow uppercase tracking-wide cursor-pointer disabled:opacity-50"
+                  >
+                    <Save className="w-4 h-4" />
+                    <span>{isProcessing ? 'SALVANDO...' : 'SALVAR'}</span>
+                  </button>
+                )}
+              </div>
             </div>
           </form>
         </div>
@@ -562,14 +636,24 @@ export const CentrosCustoView: React.FC<CentrosCustoViewProps> = ({
                           <Eye className="w-4 h-4" />
                         </button>
                         {isAdmin && (
-                          <button
-                            type="button"
-                            onClick={() => handleEditar(cc)}
-                            className="p-1.5 rounded hover:bg-teal-100 text-teal-700 transition-colors"
-                            title="Editar"
-                          >
-                            <Edit2 className="w-4 h-4" />
-                          </button>
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => handleEditar(cc)}
+                              className="p-1.5 rounded hover:bg-teal-100 text-teal-700 transition-colors cursor-pointer"
+                              title="Editar Centro de Custo"
+                            >
+                              <Edit2 className="w-4 h-4" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setDeletingCentro(cc)}
+                              className="p-1.5 rounded hover:bg-rose-100 text-rose-600 transition-colors cursor-pointer"
+                              title="Excluir Centro de Custo"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          </>
                         )}
                       </div>
                     </td>
@@ -631,6 +715,17 @@ export const CentrosCustoView: React.FC<CentrosCustoViewProps> = ({
           </div>
         </div>
       </div>
+
+      <ConfirmDeleteModal
+        isOpen={!!deletingCentro}
+        title="Excluir Centro de Custo"
+        entityCode={deletingCentro?.codigo}
+        entityName={deletingCentro?.nome || ''}
+        description="Esta ação removerá o Centro de Custo do cadastro, desde que não existam requisições pendentes ou empréstimos ativos vinculados ao setor."
+        isProcessing={isProcessing}
+        onConfirm={handleConfirmDelete}
+        onClose={() => setDeletingCentro(null)}
+      />
     </div>
   );
 };

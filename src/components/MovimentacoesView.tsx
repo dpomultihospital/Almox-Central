@@ -1,16 +1,37 @@
 import React, { useState } from 'react';
-import { History, ArrowDownLeft, ArrowUpRight, RotateCcw, AlertTriangle, Search, Filter, ShieldCheck } from 'lucide-react';
-import type { Movimentacao, Usuario } from '../types/index.ts';
+import {
+  History,
+  ArrowDownLeft,
+  ArrowUpRight,
+  RotateCcw,
+  AlertTriangle,
+  Search,
+  ShieldCheck,
+  Printer,
+  Download,
+  FileText,
+  CheckCircle2,
+} from 'lucide-react';
+import type { Movimentacao, Usuario, EmpresaUnidade } from '../types/index.ts';
+import {
+  generateComprovanteMovimentacaoPDF,
+  generateRelatorioMovimentacoesTelaPDF,
+  type PdfGeneratedDocument,
+} from '../utils/pdfGenerator.ts';
+import { PdfPrintModal } from './PdfPrintModal.tsx';
+import { useToast } from '../context/ToastContext.tsx';
 
 interface MovimentacoesViewProps {
   movimentacoes: Movimentacao[];
   currentUser: Usuario | null;
+  activeUnidade?: EmpresaUnidade | null;
   onRefresh: () => void;
 }
 
 export const MovimentacoesView: React.FC<MovimentacoesViewProps> = ({
   movimentacoes,
   currentUser,
+  activeUnidade,
   onRefresh,
 }) => {
   const [filterTipo, setFilterTipo] = useState<string>('todos');
@@ -22,12 +43,28 @@ export const MovimentacoesView: React.FC<MovimentacoesViewProps> = ({
   const [isProcessing, setIsProcessing] = useState<boolean>(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
+  // Estado de geração/impressão de PDF (Relatório da Tela e Comprovante Individual)
+  const [pdfPreviewDoc, setPdfPreviewDoc] = useState<PdfGeneratedDocument | null>(null);
+  const [isGeneratingPdf, setIsGeneratingPdf] = useState<boolean>(false);
+  const [feedbackMsg, setFeedbackMsg] = useState<string | null>(null);
+
+  const { toast } = useToast();
   const isAdmin = currentUser?.perfil === 'admin';
+
+  const showToast = (msg: string) => {
+    setFeedbackMsg(msg);
+    toast.success('Documento PDF Gerado', msg);
+    setTimeout(() => {
+      setFeedbackMsg((prev) => (prev === msg ? null : prev));
+    }, 4000);
+  };
 
   const handleConfirmarEstorno = async () => {
     if (!estornoItem) return;
     if (!justificativa.trim()) {
-      setErrorMsg('A justificativa é obrigatória para executar um estorno auditável');
+      const msg = 'A justificativa é obrigatória para executar um estorno auditável';
+      setErrorMsg(msg);
+      toast.error('Justificativa Obrigatória', msg);
       return;
     }
 
@@ -46,11 +83,17 @@ export const MovimentacoesView: React.FC<MovimentacoesViewProps> = ({
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Falha ao estornar movimentação');
 
+      toast.success(
+        'Estorno Efetuado com Sucesso',
+        data.message || `Lançamento #${estornoItem.id} estornado e saldo ajustado no livro-caixa.`
+      );
+
       setEstornoItem(null);
       setJustificativa('');
       onRefresh();
     } catch (err: any) {
       setErrorMsg(err.message);
+      toast.error('Erro ao Estornar Movimentação', err.message || 'Falha ao processar estorno.');
     } finally {
       setIsProcessing(false);
     }
@@ -69,25 +112,119 @@ export const MovimentacoesView: React.FC<MovimentacoesViewProps> = ({
     return matchesTipo && matchesSearch;
   });
 
+  const handleExportarRelatorioTela = async (mode: 'download' | 'print') => {
+    if (isGeneratingPdf) return;
+    setIsGeneratingPdf(true);
+    try {
+      const tipoLabels: Record<string, string> = {
+        todos: 'Todas as Operações',
+        entrada: 'Apenas Entradas',
+        saida: 'Apenas Saídas',
+        estorno_entrada: 'Estornos de Entrada',
+        estorno_saida: 'Estornos de Saída',
+      };
+      const filtroDesc = `${tipoLabels[filterTipo] || filterTipo}${
+        searchTerm.trim() ? ` | Busca: "${searchTerm.trim()}"` : ''
+      }`;
+
+      const generated = await generateRelatorioMovimentacoesTelaPDF({
+        movimentacoes: filtered,
+        titulo: 'Extrato do Livro-Caixa de Movimentações de Estoque',
+        subtitulo: 'Relatório oficial das movimentações exibidas em tela',
+        filtroDescricao: filtroDesc,
+        currentUser,
+        activeUnidade,
+        mode,
+      });
+
+      if (mode === 'print') {
+        setPdfPreviewDoc(generated);
+      } else {
+        showToast(`Relatório PDF gerado com ${filtered.length} movimentação(ões).`);
+      }
+    } catch (err) {
+      console.error('Erro ao gerar PDF de movimentações:', err);
+    } finally {
+      setIsGeneratingPdf(false);
+    }
+  };
+
+  const handleEmitirComprovanteIndividual = async (
+    mov: Movimentacao,
+    mode: 'download' | 'print'
+  ) => {
+    if (isGeneratingPdf) return;
+    setIsGeneratingPdf(true);
+    try {
+      const generated = await generateComprovanteMovimentacaoPDF({
+        mov,
+        currentUser,
+        activeUnidade,
+        mode,
+      });
+
+      if (mode === 'print') {
+        setPdfPreviewDoc(generated);
+      } else {
+        showToast(`Comprovante da movimentação #${mov.id} baixado em PDF.`);
+      }
+    } catch (err) {
+      console.error('Erro ao gerar comprovante de movimentação:', err);
+    } finally {
+      setIsGeneratingPdf(false);
+    }
+  };
+
   return (
     <div className="p-6 max-w-7xl mx-auto space-y-6">
       {/* Header */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 bg-white p-4 rounded-xl border border-slate-200 shadow-xs">
         <div>
           <h2 className="text-lg font-bold text-slate-900 flex items-center gap-2">
             <History className="w-5 h-5 text-teal-600" />
             Livro-Caixa de Estoque & Auditoria Imutável
           </h2>
           <p className="text-xs text-slate-500">
-            Registro transacional rigoroso: linhas históricas protegidas contra deleção; estornos geram lançamentos compensatórios
+            Registro transacional rigoroso com emissão direta de relatórios e comprovantes individuais em PDF
           </p>
         </div>
 
-        <div className="flex items-center gap-2 text-xs bg-slate-100 text-slate-600 px-3 py-1.5 rounded-lg border border-slate-200">
-          <ShieldCheck className="w-4 h-4 text-emerald-600" />
-          <span>Auditoria Estrita Habilitada</span>
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() => handleExportarRelatorioTela('print')}
+            disabled={isGeneratingPdf || filtered.length === 0}
+            className="px-3.5 py-2 bg-[#00237D] hover:bg-[#001a5e] text-white text-xs font-bold uppercase tracking-wider rounded-lg flex items-center gap-1.5 shadow-xs transition-all cursor-pointer disabled:opacity-50"
+            title="Gerar PDF com jsPDF e abrir impressão direta dos dados da tela"
+          >
+            <Printer className="w-4 h-4" />
+            <span>Imprimir Dados da Tela (PDF)</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => handleExportarRelatorioTela('download')}
+            disabled={isGeneratingPdf || filtered.length === 0}
+            className="px-3.5 py-2 bg-teal-600 hover:bg-teal-700 text-white text-xs font-bold uppercase tracking-wider rounded-lg flex items-center gap-1.5 shadow-xs transition-all cursor-pointer disabled:opacity-50"
+            title="Baixar relatório em PDF das movimentações filtradas"
+          >
+            <Download className="w-4 h-4" />
+            <span>Baixar Relatório PDF ({filtered.length})</span>
+          </button>
+
+          <div className="flex items-center gap-1.5 text-xs bg-slate-100 text-slate-600 px-3 py-2 rounded-lg border border-slate-200">
+            <ShieldCheck className="w-4 h-4 text-emerald-600" />
+            <span>Auditoria Estrita</span>
+          </div>
         </div>
       </div>
+
+      {feedbackMsg && (
+        <div className="bg-emerald-50 border border-emerald-200 text-emerald-800 px-4 py-2.5 rounded-lg text-xs font-medium flex items-center gap-2">
+          <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+          <span>{feedbackMsg}</span>
+        </div>
+      )}
 
       {/* Controles de Filtro e Busca */}
       <div className="bg-white border border-slate-200 rounded-xl p-3 flex flex-col md:flex-row items-center justify-between gap-3">
@@ -140,7 +277,7 @@ export const MovimentacoesView: React.FC<MovimentacoesViewProps> = ({
                 <th className="py-3 px-4">Doc. Referência</th>
                 <th className="py-3 px-4">Operador</th>
                 <th className="py-3 px-4">Observações</th>
-                {isAdmin && <th className="py-3 px-4 text-right">Ação</th>}
+                <th className="py-3 px-4 text-right">Comprovante PDF / Ações</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
@@ -206,10 +343,30 @@ export const MovimentacoesView: React.FC<MovimentacoesViewProps> = ({
                       <td className="py-3 px-4 text-slate-500 truncate max-w-xs">
                         {mov.observacao || '—'}
                       </td>
-                      {isAdmin && (
-                        <td className="py-3 px-4 text-right">
-                          {!isEstorno && (
+                      <td className="py-3 px-4 text-right whitespace-nowrap">
+                        <div className="inline-flex items-center justify-end gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => handleEmitirComprovanteIndividual(mov, 'print')}
+                            className="px-2 py-1 text-[11px] font-semibold text-teal-800 hover:text-teal-950 bg-teal-50 hover:bg-teal-100 rounded border border-teal-200 transition-colors cursor-pointer inline-flex items-center gap-1"
+                            title="Gerar e imprimir comprovante desta movimentação em PDF"
+                          >
+                            <Printer className="w-3 h-3 text-teal-700" />
+                            <span>Comprovante</span>
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => handleEmitirComprovanteIndividual(mov, 'download')}
+                            className="p-1 text-slate-600 hover:text-[#00237D] bg-slate-100 hover:bg-blue-50 rounded border border-slate-200 transition-colors cursor-pointer"
+                            title="Baixar comprovante individual em PDF"
+                          >
+                            <Download className="w-3.5 h-3.5" />
+                          </button>
+
+                          {isAdmin && !isEstorno && (
                             <button
+                              type="button"
                               onClick={() => {
                                 setErrorMsg(null);
                                 setJustificativa('');
@@ -222,8 +379,8 @@ export const MovimentacoesView: React.FC<MovimentacoesViewProps> = ({
                               <span>Estornar</span>
                             </button>
                           )}
-                        </td>
-                      )}
+                        </div>
+                      </td>
                     </tr>
                   );
                 })
@@ -232,6 +389,12 @@ export const MovimentacoesView: React.FC<MovimentacoesViewProps> = ({
           </table>
         </div>
       </div>
+
+      {/* Modal de Visualização / Impressão Direta de PDF */}
+      <PdfPrintModal
+        pdfDoc={pdfPreviewDoc}
+        onClose={() => setPdfPreviewDoc(null)}
+      />
 
       {/* Modal de Estorno Auditável */}
       {estornoItem && (

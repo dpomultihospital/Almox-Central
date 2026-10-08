@@ -76,19 +76,42 @@ export function getUserByLogin(login: string): (UserSession & { senha_hash: stri
   }
 }
 
-// Map simples de sessões em memória
+// Map simples de sessões em memória + token assinado stateless para ambientes Serverless (Vercel)
 const activeSessions = new Map<string, number>();
+const SESSION_SECRET = process.env.SESSION_SECRET || 'almoxcontrol-salutem-session-secret-key';
+
+function signUserToken(userId: number): string {
+  const payload = `${userId}.${Date.now()}`;
+  const sig = crypto.createHmac('sha256', SESSION_SECRET).update(payload).digest('hex').slice(0, 32);
+  return `st.${payload}.${sig}`;
+}
+
+function verifySignedToken(token: string): number | null {
+  if (!token.startsWith('st.')) return null;
+  const parts = token.split('.');
+  if (parts.length !== 4) return null;
+  const [, uidStr, tsStr, sig] = parts;
+  const payload = `${uidStr}.${tsStr}`;
+  const expectedSig = crypto.createHmac('sha256', SESSION_SECRET).update(payload).digest('hex').slice(0, 32);
+  if (sig !== expectedSig) return null;
+  const uid = parseInt(uidStr, 10);
+  return Number.isNaN(uid) ? null : uid;
+}
 
 export function createSession(userId: number): string {
-  const token = crypto.randomUUID();
+  const token = signUserToken(userId);
   activeSessions.set(token, userId);
   return token;
 }
 
 export function getSessionUser(token: string): UserSession | null {
-  const userId = activeSessions.get(token);
-  if (!userId) return null;
-  return getUserById(userId);
+  const mappedUserId = activeSessions.get(token);
+  if (mappedUserId) return getUserById(mappedUserId);
+
+  const statelessUserId = verifySignedToken(token);
+  if (statelessUserId) return getUserById(statelessUserId);
+
+  return null;
 }
 
 export function authenticateRequest(req: Request): UserSession | null {

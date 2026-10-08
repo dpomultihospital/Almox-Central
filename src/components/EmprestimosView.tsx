@@ -18,15 +18,25 @@ import {
   UserCheck,
   Package,
   Save,
-  Check
+  Check,
+  Download,
+  Trash2
 } from 'lucide-react';
-import type { Emprestimo, Produto, CentroCusto, Usuario } from '../types/index.ts';
+import type { Emprestimo, Produto, CentroCusto, Usuario, EmpresaUnidade } from '../types/index.ts';
+import {
+  generateComprovanteEmprestimoPDF,
+  type PdfGeneratedDocument,
+} from '../utils/pdfGenerator.ts';
+import { PdfPrintModal } from './PdfPrintModal.tsx';
+import { useToast } from '../context/ToastContext.tsx';
+import { ConfirmDeleteModal } from './ConfirmDeleteModal.tsx';
 
 interface EmprestimosViewProps {
   emprestimos: Emprestimo[];
   produtos: Produto[];
   centrosCusto: CentroCusto[];
   currentUser: Usuario | null;
+  activeUnidade?: EmpresaUnidade | null;
   onRefresh: () => void;
   isCreateModalOpen?: boolean;
   setIsCreateModalOpen?: (open: boolean) => void;
@@ -38,6 +48,7 @@ export const EmprestimosView: React.FC<EmprestimosViewProps> = ({
   produtos,
   centrosCusto,
   currentUser,
+  activeUnidade,
   onRefresh,
   isCreateModalOpen = false,
   setIsCreateModalOpen,
@@ -73,7 +84,10 @@ export const EmprestimosView: React.FC<EmprestimosViewProps> = ({
   const pageSize = 8;
   const [isProcessing, setIsProcessing] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [pdfPreviewDoc, setPdfPreviewDoc] = useState<PdfGeneratedDocument | null>(null);
+  const [deletingEmp, setDeletingEmp] = useState<Emprestimo | null>(null);
 
+  const { toast } = useToast();
   const canManage = currentUser && (currentUser.perfil === 'admin' || currentUser.perfil === 'almoxarife');
 
   // Apenas produtos não consumíveis para empréstimo
@@ -125,7 +139,9 @@ export const EmprestimosView: React.FC<EmprestimosViewProps> = ({
   const handleSalvarEmprestimo = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!formProdutoId || formQuantidade <= 0 || !formDataPrevista) {
-      setErrorMsg('Equipamento, quantidade e data prevista são obrigatórios.');
+      const msg = 'Equipamento, quantidade e data prevista são obrigatórios.';
+      setErrorMsg(msg);
+      toast.error('Campos Obrigatórios', msg);
       return;
     }
 
@@ -143,6 +159,7 @@ export const EmprestimosView: React.FC<EmprestimosViewProps> = ({
           produto_id: formProdutoId,
           quantidade: formQuantidade,
           centro_custo_id: formCcId,
+          solicitante_id: formSolicitanteId,
           requisitante_id: formSolicitanteId,
           data_prevista_devolucao: formDataPrevista,
           condicao_saida: formCondicaoSaida,
@@ -155,11 +172,18 @@ export const EmprestimosView: React.FC<EmprestimosViewProps> = ({
         throw new Error(data.error || 'Erro ao registrar empréstimo.');
       }
 
+      toast.success(
+        'Empréstimo Registrado com Sucesso',
+        data.message || `Cautela ${data.data?.codigo_emprestimo || ''} liberada e saldo atualizado.`
+      );
+
       setIsFormOpen(false);
       if (setIsCreateModalOpen) setIsCreateModalOpen(false);
       onRefresh();
     } catch (err: any) {
-      setErrorMsg(err.message || 'Falha ao processar empréstimo.');
+      const msg = err.message || 'Falha ao processar empréstimo.';
+      setErrorMsg(msg);
+      toast.error('Erro ao Liberar Empréstimo', msg);
     } finally {
       setIsProcessing(false);
     }
@@ -188,10 +212,45 @@ export const EmprestimosView: React.FC<EmprestimosViewProps> = ({
         throw new Error(data.error || 'Erro ao receber devolução.');
       }
 
+      toast.success(
+        'Devolução Registrada com Sucesso',
+        data.message || `O equipamento "${selectedEmp.produto_nome}" retornou ao estoque.`
+      );
+
       setSelectedEmp(null);
       onRefresh();
     } catch (err: any) {
-      setErrorMsg(err.message || 'Falha ao registrar devolução.');
+      const msg = err.message || 'Falha ao registrar devolução.';
+      setErrorMsg(msg);
+      toast.error('Erro ao Receber Devolução', msg);
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  const handleConfirmDeleteEmprestimo = async () => {
+    if (!deletingEmp) return;
+    setIsProcessing(true);
+    try {
+      const res = await fetch(`/api/emprestimos/${deletingEmp.id}`, {
+        method: 'DELETE',
+        headers: {
+          'Authorization': `user:${currentUser?.id}`,
+        },
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Erro ao excluir registro de empréstimo.');
+      }
+
+      toast.success(
+        'Empréstimo Excluído',
+        data.message || `O registro de empréstimo "${deletingEmp.codigo_emprestimo || '#' + deletingEmp.id}" foi excluído.`
+      );
+      setDeletingEmp(null);
+      onRefresh();
+    } catch (err: any) {
+      toast.error('Erro ao Excluir Empréstimo', err.message || 'Não foi possível excluir o registro.');
     } finally {
       setIsProcessing(false);
     }
@@ -598,12 +657,46 @@ export const EmprestimosView: React.FC<EmprestimosViewProps> = ({
                         )}
                         <button
                           type="button"
-                          onClick={() => window.print()}
-                          className="p-1 rounded text-slate-400 hover:text-slate-700"
-                          title="Imprimir cautela"
+                          onClick={async () => {
+                            const doc = await generateComprovanteEmprestimoPDF({
+                              emprestimo: e,
+                              currentUser,
+                              activeUnidade,
+                              mode: 'print',
+                            });
+                            setPdfPreviewDoc(doc);
+                          }}
+                          className="px-2 py-1 rounded bg-teal-50 hover:bg-teal-100 text-teal-800 border border-teal-200 text-[11px] font-semibold inline-flex items-center gap-1 cursor-pointer"
+                          title="Gerar e imprimir Termo de Cautela / Comprovante em PDF"
                         >
-                          <Printer className="w-4 h-4" />
+                          <Printer className="w-3.5 h-3.5 text-teal-700" />
+                          <span>Cautela PDF</span>
                         </button>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            generateComprovanteEmprestimoPDF({
+                              emprestimo: e,
+                              currentUser,
+                              activeUnidade,
+                              mode: 'download',
+                            })
+                          }
+                          className="p-1.5 rounded bg-slate-100 hover:bg-blue-50 text-slate-600 hover:text-[#00237D] border border-slate-200 cursor-pointer"
+                          title="Baixar Termo de Cautela em PDF"
+                        >
+                          <Download className="w-3.5 h-3.5" />
+                        </button>
+                        {canManage && (
+                          <button
+                            type="button"
+                            onClick={() => setDeletingEmp(e)}
+                            className="p-1.5 rounded bg-slate-100 hover:bg-rose-50 text-slate-600 hover:text-rose-600 border border-slate-200 transition-colors cursor-pointer"
+                            title="Excluir registro de empréstimo"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        )}
                       </div>
                     </td>
                   </tr>
@@ -729,6 +822,22 @@ export const EmprestimosView: React.FC<EmprestimosViewProps> = ({
           </div>
         </div>
       )}
+
+      <PdfPrintModal
+        pdfDoc={pdfPreviewDoc}
+        onClose={() => setPdfPreviewDoc(null)}
+      />
+
+      <ConfirmDeleteModal
+        isOpen={!!deletingEmp}
+        title="Excluir Registro de Empréstimo"
+        entityCode={deletingEmp?.codigo_emprestimo || (deletingEmp ? `EMP-${String(deletingEmp.id).padStart(4, '0')}` : undefined)}
+        entityName={deletingEmp?.produto_nome || ''}
+        description="Caso o empréstimo ainda conste como aberto, o saldo físico do equipamento será recomposto automaticamente ao almoxarifado."
+        isProcessing={isProcessing}
+        onConfirm={handleConfirmDeleteEmprestimo}
+        onClose={() => setDeletingEmp(null)}
+      />
     </div>
   );
 };

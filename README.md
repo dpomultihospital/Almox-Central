@@ -102,6 +102,24 @@ O sistema é entregue em estado limpo, sem registros fictícios de demonstraçã
 - **Senha Inicial**: `admin123`
 - *Observação*: No primeiro login, o sistema exibe um aviso orientando a troca de senha para maior segurança.
 
+### Deploy na Vercel
+
+O projeto já está configurado para deploy direto na **Vercel** (Frontend estático Vite em `dist/` + API Serverless Express em `api/index.ts` + configurações em `vercel.json`):
+
+1. **Via GitHub / GitLab / Bitbucket (Recomendado)**:
+   - Envie os arquivos do repositório para o seu Git.
+   - Acesse o painel da [Vercel](https://vercel.com/new) e importe o repositório.
+   - A Vercel detectará automaticamente o `vercel.json` (`Build Command: npm run build`, `Output Directory: dist`).
+   - Em *Project Settings > Node.js Version*, mantenha **22.x** (configurado em `package.json`).
+   - Clique em **Deploy**.
+
+2. **Via Vercel CLI**:
+   ```bash
+   npx vercel
+   # Para publicar diretamente em produção:
+   npx vercel --prod
+   ```
+
 ---
 
 ## 6. Endpoints Principais da API REST

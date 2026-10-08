@@ -18,9 +18,12 @@ import {
   Boxes,
   MapPin,
   TrendingDown,
-  DollarSign
+  DollarSign,
+  Trash2
 } from 'lucide-react';
 import type { Produto, Usuario, UnidadeMedida, TipoProduto } from '../types/index.ts';
+import { useToast } from '../context/ToastContext.tsx';
+import { ConfirmDeleteModal } from './ConfirmDeleteModal.tsx';
 
 interface ProdutosViewProps {
   produtos: Produto[];
@@ -66,7 +69,9 @@ export const ProdutosView: React.FC<ProdutosViewProps> = ({
   const pageSize = 8;
   const [isProcessing, setIsProcessing] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [deletingProduto, setDeletingProduto] = useState<Produto | null>(null);
 
+  const { toast } = useToast();
   const canEdit = currentUser && (currentUser.perfil === 'admin' || currentUser.perfil === 'almoxarife');
 
   // Filtragem dos produtos
@@ -142,7 +147,9 @@ export const ProdutosView: React.FC<ProdutosViewProps> = ({
     }
 
     if (!formCodigo || !formNome || !formUnidadeMedida || !formTipo) {
-      setErrorMsg('Código, nome, unidade de medida e tipo são obrigatórios.');
+      const msg = 'Código, nome, unidade de medida e tipo são obrigatórios.';
+      setErrorMsg(msg);
+      toast.error('Campos Obrigatórios', msg);
       setActiveFormTab('dados_principais');
       return;
     }
@@ -181,10 +188,58 @@ export const ProdutosView: React.FC<ProdutosViewProps> = ({
         throw new Error(data.error || 'Erro ao salvar produto.');
       }
 
+      if (formMode === 'create') {
+        toast.success(
+          'Produto Cadastrado com Sucesso',
+          `O item "${payload.codigo} - ${payload.nome}" foi adicionado ao catálogo.`
+        );
+      } else {
+        toast.success(
+          'Produto Atualizado com Sucesso',
+          `As alterações no item "${payload.codigo} - ${payload.nome}" foram salvas.`
+        );
+      }
+
       setIsFormOpen(false);
       onRefresh();
     } catch (err: any) {
-      setErrorMsg(err.message || 'Erro ao processar catálogo.');
+      const msg = err.message || 'Erro ao processar catálogo.';
+      setErrorMsg(msg);
+      toast.error(
+        formMode === 'create' ? 'Erro ao Cadastrar Produto' : 'Erro ao Editar Produto',
+        msg
+      );
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  const handleConfirmDelete = async () => {
+    if (!deletingProduto) return;
+    setIsProcessing(true);
+    try {
+      const res = await fetch(`/api/produtos/${deletingProduto.id}`, {
+        method: 'DELETE',
+        headers: {
+          'Authorization': `user:${currentUser?.id}`,
+        },
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Erro ao excluir produto.');
+      }
+
+      toast.success(
+        'Produto Excluído',
+        data.message || `O item "${deletingProduto.codigo} - ${deletingProduto.nome}" foi removido do catálogo.`
+      );
+      if (editingId === deletingProduto.id) {
+        setIsFormOpen(false);
+      }
+      setDeletingProduto(null);
+      onRefresh();
+    } catch (err: any) {
+      toast.error('Erro ao Excluir Produto', err.message || 'Não foi possível excluir o produto.');
     } finally {
       setIsProcessing(false);
     }
@@ -457,26 +512,45 @@ export const ProdutosView: React.FC<ProdutosViewProps> = ({
             )}
 
             {/* Rodapé: SALVAR e VOLTAR */}
-            <div className="pt-4 border-t border-slate-200 flex items-center justify-end gap-3">
-              <button
-                type="button"
-                onClick={() => setIsFormOpen(false)}
-                className="bg-teal-600 hover:bg-teal-700 text-white font-medium px-4 py-2 rounded text-xs flex items-center gap-1.5 transition-all shadow uppercase tracking-wide cursor-pointer"
-              >
-                <ArrowLeft className="w-4 h-4" />
-                <span>VOLTAR</span>
-              </button>
+            <div className="pt-4 border-t border-slate-200 flex items-center justify-between gap-3">
+              <div>
+                {formMode === 'edit' && canEdit && editingId && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const target = produtos.find((item) => item.id === editingId);
+                      if (target) setDeletingProduto(target);
+                    }}
+                    disabled={isProcessing}
+                    className="bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 font-semibold px-4 py-2 rounded text-xs flex items-center gap-1.5 transition-all uppercase tracking-wide cursor-pointer disabled:opacity-50"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                    <span>EXCLUIR ITEM</span>
+                  </button>
+                )}
+              </div>
 
-              {formMode !== 'view' && (
+              <div className="flex items-center gap-3">
                 <button
-                  type="submit"
-                  disabled={isProcessing}
-                  className="bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white font-medium px-5 py-2 rounded text-xs flex items-center gap-1.5 transition-all shadow uppercase tracking-wide cursor-pointer disabled:opacity-50"
+                  type="button"
+                  onClick={() => setIsFormOpen(false)}
+                  className="bg-teal-600 hover:bg-teal-700 text-white font-medium px-4 py-2 rounded text-xs flex items-center gap-1.5 transition-all shadow uppercase tracking-wide cursor-pointer"
                 >
-                  <Save className="w-4 h-4" />
-                  <span>{isProcessing ? 'SALVANDO...' : 'SALVAR'}</span>
+                  <ArrowLeft className="w-4 h-4" />
+                  <span>VOLTAR</span>
                 </button>
-              )}
+
+                {formMode !== 'view' && (
+                  <button
+                    type="submit"
+                    disabled={isProcessing}
+                    className="bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white font-medium px-5 py-2 rounded text-xs flex items-center gap-1.5 transition-all shadow uppercase tracking-wide cursor-pointer disabled:opacity-50"
+                  >
+                    <Save className="w-4 h-4" />
+                    <span>{isProcessing ? 'SALVANDO...' : 'SALVAR'}</span>
+                  </button>
+                )}
+              </div>
             </div>
           </form>
         </div>
@@ -632,14 +706,24 @@ export const ProdutosView: React.FC<ProdutosViewProps> = ({
                             <Eye className="w-4 h-4" />
                           </button>
                           {canEdit && (
-                            <button
-                              type="button"
-                              onClick={() => handleEditar(p)}
-                              className="p-1.5 rounded hover:bg-teal-100 text-teal-700 transition-colors"
-                              title="Editar"
-                            >
-                              <Edit2 className="w-4 h-4" />
-                            </button>
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => handleEditar(p)}
+                                className="p-1.5 rounded hover:bg-teal-100 text-teal-700 transition-colors cursor-pointer"
+                                title="Editar produto"
+                              >
+                                <Edit2 className="w-4 h-4" />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setDeletingProduto(p)}
+                                className="p-1.5 rounded hover:bg-rose-100 text-rose-600 transition-colors cursor-pointer"
+                                title="Excluir produto"
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </button>
+                            </>
                           )}
                         </div>
                       </td>
@@ -702,6 +786,17 @@ export const ProdutosView: React.FC<ProdutosViewProps> = ({
           </div>
         </div>
       </div>
+
+      <ConfirmDeleteModal
+        isOpen={!!deletingProduto}
+        title="Excluir Produto do Catálogo"
+        entityCode={deletingProduto?.codigo}
+        entityName={deletingProduto?.nome || ''}
+        description="Esta ação removerá o produto do catálogo e os registros de movimentação vinculados, desde que não existam empréstimos ativos pendentes."
+        isProcessing={isProcessing}
+        onConfirm={handleConfirmDelete}
+        onClose={() => setDeletingProduto(null)}
+      />
     </div>
   );
 };

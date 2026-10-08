@@ -25,7 +25,8 @@ import {
   History,
   ShieldCheck,
   UserCheck,
-  FileText
+  FileText,
+  Download
 } from 'lucide-react';
 import type {
   Requisicao,
@@ -35,13 +36,22 @@ import type {
   ItemRequisicao,
   PrioridadeRequisicao,
   HistoricoRequisicao,
+  EmpresaUnidade,
 } from '../types/index.ts';
+import {
+  generateComprovanteRequisicaoPDF,
+  type PdfGeneratedDocument,
+} from '../utils/pdfGenerator.ts';
+import { PdfPrintModal } from './PdfPrintModal.tsx';
+import { useToast } from '../context/ToastContext.tsx';
+import { ConfirmDeleteModal } from './ConfirmDeleteModal.tsx';
 
 interface RequisicoesViewProps {
   requisicoes: Requisicao[];
   produtos: Produto[];
   centrosCusto: CentroCusto[];
   currentUser: Usuario | null;
+  activeUnidade?: EmpresaUnidade | null;
   onRefresh: () => void;
   isCreateModalOpen?: boolean;
   setIsCreateModalOpen?: (open: boolean) => void;
@@ -53,6 +63,7 @@ export const RequisicoesView: React.FC<RequisicoesViewProps> = ({
   produtos,
   centrosCusto,
   currentUser,
+  activeUnidade,
   onRefresh,
   isCreateModalOpen = false,
   setIsCreateModalOpen,
@@ -112,6 +123,53 @@ export const RequisicoesView: React.FC<RequisicoesViewProps> = ({
   const [motivoRejeicao, setMotivoRejeicao] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [pdfPreviewDoc, setPdfPreviewDoc] = useState<PdfGeneratedDocument | null>(null);
+  const [deletingRequisicao, setDeletingRequisicao] = useState<Requisicao | null>(null);
+
+  const { toast } = useToast();
+
+  const handleEmitirPdfRequisicao = async (
+    reqObj: Requisicao,
+    mode: 'download' | 'print',
+    preloadedDetails?: {
+      requisicao: Requisicao;
+      itens: ItemRequisicao[];
+      historico?: HistoricoRequisicao[];
+    } | null
+  ) => {
+    try {
+      let targetReq = preloadedDetails?.requisicao || reqObj;
+      let targetItens = preloadedDetails?.itens || [];
+      let targetHist = preloadedDetails?.historico || [];
+
+      if (!preloadedDetails) {
+        const res = await fetch(`/api/requisicoes/${reqObj.id}`, {
+          headers: { Authorization: `user:${currentUser?.id}` },
+        });
+        if (res.ok) {
+          const data = await res.json();
+          targetReq = data.requisicao || reqObj;
+          targetItens = data.itens || [];
+          targetHist = data.historico || [];
+        }
+      }
+
+      const generated = await generateComprovanteRequisicaoPDF({
+        requisicao: targetReq,
+        itens: targetItens,
+        historico: targetHist,
+        currentUser,
+        activeUnidade,
+        mode,
+      });
+
+      if (mode === 'print') {
+        setPdfPreviewDoc(generated);
+      }
+    } catch (err) {
+      console.error('Erro ao gerar PDF da requisição:', err);
+    }
+  };
 
   // Paginação
   const [currentPage, setCurrentPage] = useState(1);
@@ -193,7 +251,9 @@ export const RequisicoesView: React.FC<RequisicoesViewProps> = ({
   const handleSubmitRequisicao = async (e: React.FormEvent) => {
     e.preventDefault();
     if (itensAdicionados.length === 0) {
-      setActionError('A requisição deve conter pelo menos 1 item consumível adicionado.');
+      const msg = 'A requisição deve conter pelo menos 1 item consumível adicionado.';
+      setActionError(msg);
+      toast.error('Cesta de Itens Vazia', msg);
       setActiveFormTab('itens');
       return;
     }
@@ -224,11 +284,18 @@ export const RequisicoesView: React.FC<RequisicoesViewProps> = ({
         throw new Error(data.error || 'Erro ao gerar requisição.');
       }
 
+      toast.success(
+        'Requisição Registrada com Sucesso',
+        `Solicitação ${data.data?.numero_requisicao || ''} aberta com ${itensAdicionados.length} item(ns) e enviada para análise.`
+      );
+
       setIsFormOpen(false);
       if (setIsCreateModalOpen) setIsCreateModalOpen(false);
       onRefresh();
     } catch (err: any) {
-      setActionError(err.message || 'Falha ao processar solicitação.');
+      const msg = err.message || 'Falha ao processar solicitação.';
+      setActionError(msg);
+      toast.error('Erro ao Criar Requisição', msg);
     } finally {
       setIsProcessing(false);
     }
@@ -302,7 +369,9 @@ export const RequisicoesView: React.FC<RequisicoesViewProps> = ({
 
     const itemSemMotivo = decisoesPayload.find((d) => d.decisao === 'negado' && !d.motivo_decisao);
     if (itemSemMotivo) {
-      setActionError(`Informe a justificativa técnica para negar o item "${itemSemMotivo.produto_nome}".`);
+      const msg = `Informe a justificativa técnica para negar o item "${itemSemMotivo.produto_nome}".`;
+      setActionError(msg);
+      toast.error('Parecer Obrigatório', msg);
       return;
     }
 
@@ -325,11 +394,19 @@ export const RequisicoesView: React.FC<RequisicoesViewProps> = ({
         throw new Error(data.error || 'Erro ao processar análise da requisição.');
       }
 
+      if (data.data?.status === 'rejeitada') {
+        toast.warning('Requisição Concluída (Itens Negados)', data.message);
+      } else {
+        toast.success('Requisição Atendida com Sucesso', data.message);
+      }
+
       setSelectedReq(null);
       setReqDetails(null);
       onRefresh();
     } catch (err: any) {
-      setActionError(err.message || 'Falha ao aprovar.');
+      const msg = err.message || 'Falha ao aprovar.';
+      setActionError(msg);
+      toast.error('Erro na Análise da Requisição', msg);
     } finally {
       setIsProcessing(false);
     }
@@ -338,7 +415,9 @@ export const RequisicoesView: React.FC<RequisicoesViewProps> = ({
   // Ação Almoxarife: Rejeitar com parecer
   const handleRejeitar = async () => {
     if (!selectedReq || !motivoRejeicao.trim()) {
-      setActionError('A justificativa de rejeição é obrigatória.');
+      const msg = 'A justificativa de rejeição é obrigatória.';
+      setActionError(msg);
+      toast.error('Justificativa Obrigatória', msg);
       return;
     }
 
@@ -359,13 +438,52 @@ export const RequisicoesView: React.FC<RequisicoesViewProps> = ({
         throw new Error(data.error || 'Erro ao rejeitar requisição.');
       }
 
+      toast.warning(
+        'Requisição Rejeitada',
+        data.message || `A requisição ${selectedReq.numero_requisicao} foi rejeitada com parecer técnico.`
+      );
+
       setIsRejectModalOpen(false);
       setSelectedReq(null);
       setReqDetails(null);
       setMotivoRejeicao('');
       onRefresh();
     } catch (err: any) {
-      setActionError(err.message || 'Falha ao rejeitar.');
+      const msg = err.message || 'Falha ao rejeitar.';
+      setActionError(msg);
+      toast.error('Erro ao Rejeitar Requisição', msg);
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  const handleConfirmDeleteRequisicao = async () => {
+    if (!deletingRequisicao) return;
+    setIsProcessing(true);
+    try {
+      const res = await fetch(`/api/requisicoes/${deletingRequisicao.id}`, {
+        method: 'DELETE',
+        headers: {
+          'Authorization': `user:${currentUser?.id}`,
+        },
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Erro ao excluir requisição.');
+      }
+
+      toast.success(
+        'Requisição Excluída',
+        data.message || `A requisição "${deletingRequisicao.numero_requisicao}" foi excluída.`
+      );
+      if (selectedReq?.id === deletingRequisicao.id) {
+        setSelectedReq(null);
+        setReqDetails(null);
+      }
+      setDeletingRequisicao(null);
+      onRefresh();
+    } catch (err: any) {
+      toast.error('Erro ao Excluir Requisição', err.message || 'Não foi possível excluir a requisição.');
     } finally {
       setIsProcessing(false);
     }
@@ -880,6 +998,37 @@ export const RequisicoesView: React.FC<RequisicoesViewProps> = ({
                             </span>
                           )}
                         </button>
+
+                        <button
+                          type="button"
+                          onClick={() => handleEmitirPdfRequisicao(r, 'print')}
+                          title="Imprimir Guia e Comprovante da Requisição em PDF"
+                          className="p-1.5 rounded bg-slate-100 hover:bg-blue-50 text-slate-600 hover:text-[#00237D] border border-slate-200 transition-colors cursor-pointer"
+                        >
+                          <Printer className="w-3.5 h-3.5" />
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => handleEmitirPdfRequisicao(r, 'download')}
+                          title="Baixar Guia e Comprovante da Requisição em PDF"
+                          className="p-1.5 rounded bg-slate-100 hover:bg-teal-50 text-slate-600 hover:text-teal-700 border border-slate-200 transition-colors cursor-pointer"
+                        >
+                          <Download className="w-3.5 h-3.5" />
+                        </button>
+
+                        {(currentUser?.perfil === 'admin' ||
+                          (currentUser?.perfil === 'almoxarife' && r.status !== 'aprovada_atendida') ||
+                          (currentUser?.id === r.solicitante_id && r.status === 'pendente')) && (
+                          <button
+                            type="button"
+                            onClick={() => setDeletingRequisicao(r)}
+                            title="Excluir requisição"
+                            className="p-1.5 rounded bg-slate-100 hover:bg-rose-50 text-slate-600 hover:text-rose-600 border border-slate-200 transition-colors cursor-pointer"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        )}
                       </div>
                     </td>
                   </tr>
@@ -1587,14 +1736,25 @@ export const RequisicoesView: React.FC<RequisicoesViewProps> = ({
 
             {/* Ações do Almoxarife no Rodapé */}
             <div className="px-6 py-4 bg-slate-50 border-t border-slate-200 flex flex-wrap items-center justify-between gap-3">
-              <button
-                type="button"
-                onClick={() => window.print()}
-                className="px-3 py-2 bg-white border border-slate-300 hover:bg-slate-100 text-slate-700 font-medium rounded text-xs flex items-center gap-1.5 shadow-sm transition-all cursor-pointer"
-              >
-                <Printer className="w-4 h-4 text-teal-700" />
-                <span>IMPRIMIR GUIA E AUDITORIA</span>
-              </button>
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => handleEmitirPdfRequisicao(selectedReq, 'print', reqDetails)}
+                  className="px-3.5 py-2 bg-[#00237D] hover:bg-[#001a5e] text-white font-semibold rounded text-xs flex items-center gap-1.5 shadow-sm transition-all cursor-pointer uppercase tracking-wide"
+                >
+                  <Printer className="w-4 h-4" />
+                  <span>IMPRIMIR GUIA E AUDITORIA (PDF)</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => handleEmitirPdfRequisicao(selectedReq, 'download', reqDetails)}
+                  className="px-3.5 py-2 bg-white border border-teal-600 hover:bg-teal-50 text-teal-800 font-semibold rounded text-xs flex items-center gap-1.5 shadow-sm transition-all cursor-pointer uppercase tracking-wide"
+                >
+                  <Download className="w-4 h-4 text-teal-700" />
+                  <span>BAIXAR COMPROVANTE PDF</span>
+                </button>
+              </div>
 
               <div className="flex items-center gap-3">
                 {isAlmoxarifeOrAdmin && selectedReq.status === 'pendente' && (
@@ -1694,6 +1854,22 @@ export const RequisicoesView: React.FC<RequisicoesViewProps> = ({
           </div>
         </div>
       )}
+
+      <PdfPrintModal
+        pdfDoc={pdfPreviewDoc}
+        onClose={() => setPdfPreviewDoc(null)}
+      />
+
+      <ConfirmDeleteModal
+        isOpen={!!deletingRequisicao}
+        title="Excluir Requisição de Materiais"
+        entityCode={deletingRequisicao?.numero_requisicao}
+        entityName={deletingRequisicao ? `${deletingRequisicao.centro_custo_nome || ''} (${deletingRequisicao.solicitante_nome || ''})` : ''}
+        description="Esta ação removerá a requisição e seus respectivos itens do sistema."
+        isProcessing={isProcessing}
+        onConfirm={handleConfirmDeleteRequisicao}
+        onClose={() => setDeletingRequisicao(null)}
+      />
     </div>
   );
 };

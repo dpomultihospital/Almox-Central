@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { db, runInTransaction, resetDatabase, updateOverdueLoans } from './db.ts';
+import { db, DB_PATH, getSchemaSql, getSeedSql, runInTransaction, resetDatabase, updateOverdueLoans } from './db.ts';
 import { 
   authenticateRequest, 
   getUserById, 
@@ -8,6 +8,7 @@ import {
   createSession 
 } from './auth.ts';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 
 export const apiRouter = Router();
@@ -406,6 +407,63 @@ apiRouter.patch('/centros-custo/:id/toggle', (req, res) => {
   res.json({ id, ativo: novoAtivo, message: novoAtivo ? 'Centro ativado' : 'Centro inativado' });
 });
 
+apiRouter.delete('/centros-custo/:id', (req, res) => {
+  const user = authenticateRequest(req);
+  if (!user || user.perfil !== 'admin') {
+    res.status(403).json({ error: 'Apenas Administradores podem excluir Centros de Custo' });
+    return;
+  }
+
+  const { id } = req.params;
+  const cc = db.prepare('SELECT * FROM centros_custo WHERE id = ?').get(id) as any;
+  if (!cc) {
+    res.status(404).json({ error: 'Centro de Custo não encontrado' });
+    return;
+  }
+
+  const reqPendentes = db.prepare(
+    "SELECT COUNT(*) as count FROM requisicoes WHERE centro_custo_id = ? AND status = 'pendente'"
+  ).get(id) as { count: number };
+  if (reqPendentes.count > 0) {
+    res.status(400).json({
+      error: `Não é possível excluir o setor "${cc.nome}" pois existem ${reqPendentes.count} requisição(ões) pendente(s) vinculada(s).`,
+    });
+    return;
+  }
+
+  const empAtivos = db.prepare(
+    "SELECT COUNT(*) as count FROM emprestimos WHERE centro_custo_id = ? AND status IN ('emprestado', 'atrasado')"
+  ).get(id) as { count: number };
+  if (empAtivos.count > 0) {
+    res.status(400).json({
+      error: `Não é possível excluir o setor "${cc.nome}" pois existem ${empAtivos.count} equipamento(s) emprestado(s) em aberto.`,
+    });
+    return;
+  }
+
+  try {
+    runInTransaction(() => {
+      db.prepare('UPDATE usuarios SET centro_custo_id = NULL WHERE centro_custo_id = ?').run(id);
+      db.prepare('UPDATE movimentacoes SET centro_custo_id = NULL WHERE centro_custo_id = ?').run(id);
+      const reqIds = db.prepare('SELECT id FROM requisicoes WHERE centro_custo_id = ?').all(id) as Array<{ id: number }>;
+      for (const r of reqIds) {
+        db.prepare('DELETE FROM historico_requisicoes WHERE requisicao_id = ?').run(r.id);
+        db.prepare('DELETE FROM itens_requisicao WHERE requisicao_id = ?').run(r.id);
+      }
+      db.prepare('DELETE FROM requisicoes WHERE centro_custo_id = ?').run(id);
+      db.prepare('DELETE FROM emprestimos WHERE centro_custo_id = ?').run(id);
+      db.prepare('DELETE FROM centros_custo WHERE id = ?').run(id);
+    });
+
+    res.json({
+      id: Number(id),
+      message: `Centro de Custo "${cc.codigo} - ${cc.nome}" excluído com sucesso.`,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Erro ao excluir Centro de Custo: ' + err.message });
+  }
+});
+
 // ============================================================================
 // 5. GESTÃO DE USUÁRIOS (PADRÃO SALUTEM COM ABAS E FILTROS COMPLETOS)
 // ============================================================================
@@ -577,6 +635,59 @@ apiRouter.patch('/usuarios/:id/toggle', (req, res) => {
   res.json({ id, ativo: novoAtivo, message: novoAtivo ? 'Usuário ativado' : 'Usuário inativado' });
 });
 
+apiRouter.delete('/usuarios/:id', (req, res) => {
+  const user = authenticateRequest(req);
+  if (!user || user.perfil !== 'admin') {
+    res.status(403).json({ error: 'Apenas Administradores podem excluir usuários' });
+    return;
+  }
+
+  const { id } = req.params;
+  const alvo = db.prepare('SELECT * FROM usuarios WHERE id = ?').get(id) as any;
+  if (!alvo) {
+    res.status(404).json({ error: 'Usuário não encontrado' });
+    return;
+  }
+
+  if (Number(id) === user.id || alvo.login === 'admin') {
+    res.status(400).json({
+      error: 'Não é permitido excluir o usuário administrador principal ou o próprio operador autenticado na sessão.',
+    });
+    return;
+  }
+
+  const empAtivos = db.prepare(
+    "SELECT COUNT(*) as count FROM emprestimos WHERE solicitante_id = ? AND status IN ('emprestado', 'atrasado')"
+  ).get(id) as { count: number };
+  if (empAtivos.count > 0) {
+    res.status(400).json({
+      error: `O usuário "${alvo.nome}" possui ${empAtivos.count} empréstimo(s) de equipamento em aberto. Registre a devolução antes de excluir.`,
+    });
+    return;
+  }
+
+  try {
+    runInTransaction(() => {
+      db.prepare('UPDATE movimentacoes SET usuario_id = ? WHERE usuario_id = ?').run(user.id, id);
+      db.prepare('UPDATE requisicoes SET solicitante_id = ? WHERE solicitante_id = ?').run(user.id, id);
+      db.prepare('UPDATE requisicoes SET almoxarife_id = ? WHERE almoxarife_id = ?').run(user.id, id);
+      db.prepare('UPDATE itens_requisicao SET analisado_por_id = ? WHERE analisado_por_id = ?').run(user.id, id);
+      db.prepare('UPDATE historico_requisicoes SET usuario_id = ? WHERE usuario_id = ?').run(user.id, id);
+      db.prepare('UPDATE emprestimos SET solicitante_id = ? WHERE solicitante_id = ?').run(user.id, id);
+      db.prepare('UPDATE emprestimos SET almoxarife_liberacao_id = ? WHERE almoxarife_liberacao_id = ?').run(user.id, id);
+      db.prepare('UPDATE emprestimos SET almoxarife_recebimento_id = ? WHERE almoxarife_recebimento_id = ?').run(user.id, id);
+      db.prepare('DELETE FROM usuarios WHERE id = ?').run(id);
+    });
+
+    res.json({
+      id: Number(id),
+      message: `Usuário "${alvo.nome}" (@${alvo.login}) excluído com sucesso.`,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Erro ao excluir usuário: ' + err.message });
+  }
+});
+
 // ============================================================================
 // 6. CATÁLOGO DE PRODUTOS E ITENS
 // ============================================================================
@@ -686,6 +797,48 @@ apiRouter.put('/produtos/:id', (req, res) => {
     res.json(atualizado);
   } catch (err: any) {
     res.status(500).json({ error: 'Erro ao atualizar produto: ' + err.message });
+  }
+});
+
+apiRouter.delete('/produtos/:id', (req, res) => {
+  const user = authenticateRequest(req);
+  if (!user || (user.perfil !== 'admin' && user.perfil !== 'almoxarife')) {
+    res.status(403).json({ error: 'Apenas Administradores e Almoxarifes podem excluir produtos' });
+    return;
+  }
+
+  const { id } = req.params;
+  const prod = db.prepare('SELECT * FROM produtos WHERE id = ?').get(id) as any;
+  if (!prod) {
+    res.status(404).json({ error: 'Produto não encontrado no catálogo' });
+    return;
+  }
+
+  const empAtivos = db.prepare(
+    "SELECT COUNT(*) as count FROM emprestimos WHERE produto_id = ? AND status IN ('emprestado', 'atrasado')"
+  ).get(id) as { count: number };
+  if (empAtivos.count > 0) {
+    res.status(400).json({
+      error: `Não é possível excluir "${prod.nome}" pois há ${empAtivos.count} empréstimo(s) ativo(s) deste equipamento.`,
+    });
+    return;
+  }
+
+  try {
+    runInTransaction(() => {
+      db.prepare('DELETE FROM historico_requisicoes WHERE produto_id = ?').run(id);
+      db.prepare('DELETE FROM itens_requisicao WHERE produto_id = ?').run(id);
+      db.prepare('DELETE FROM movimentacoes WHERE produto_id = ?').run(id);
+      db.prepare('DELETE FROM emprestimos WHERE produto_id = ?').run(id);
+      db.prepare('DELETE FROM produtos WHERE id = ?').run(id);
+    });
+
+    res.json({
+      id: Number(id),
+      message: `Produto "${prod.codigo} - ${prod.nome}" excluído com sucesso do catálogo.`,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Erro ao excluir produto: ' + err.message });
   }
 });
 
@@ -1425,6 +1578,50 @@ apiRouter.post('/requisicoes/:id/cancelar', (req, res) => {
   res.json({ message: 'Requisição cancelada com sucesso', id, status: 'cancelada' });
 });
 
+apiRouter.delete('/requisicoes/:id', (req, res) => {
+  const user = authenticateRequest(req);
+  if (!user) {
+    res.status(401).json({ error: 'Não autenticado' });
+    return;
+  }
+
+  const { id } = req.params;
+  const reqRow = db.prepare('SELECT * FROM requisicoes WHERE id = ?').get(id) as any;
+  if (!reqRow) {
+    res.status(404).json({ error: 'Requisição não encontrada' });
+    return;
+  }
+
+  if (user.perfil === 'requisitante') {
+    if (reqRow.solicitante_id !== user.id) {
+      res.status(403).json({ error: 'Você só pode excluir requisições abertas por você mesmo' });
+      return;
+    }
+    if (reqRow.status !== 'pendente') {
+      res.status(400).json({ error: 'Solicitantes só podem excluir requisições que ainda estão com status Pendente' });
+      return;
+    }
+  } else if (reqRow.status === 'aprovada_atendida' && user.perfil !== 'admin') {
+    res.status(403).json({ error: 'Apenas Administradores podem excluir requisições já atendidas' });
+    return;
+  }
+
+  try {
+    runInTransaction(() => {
+      db.prepare('DELETE FROM historico_requisicoes WHERE requisicao_id = ?').run(id);
+      db.prepare('DELETE FROM itens_requisicao WHERE requisicao_id = ?').run(id);
+      db.prepare('DELETE FROM requisicoes WHERE id = ?').run(id);
+    });
+
+    res.json({
+      id: Number(id),
+      message: `Requisição "${reqRow.numero_requisicao}" excluída com sucesso.`,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Erro ao excluir requisição: ' + err.message });
+  }
+});
+
 // ============================================================================
 // 9. MÓDULO DE EMPRÉSTIMOS E DEVOLUÇÕES (FERRAMENTAS / NÃO CONSUMÍVEIS)
 // ============================================================================
@@ -1658,6 +1855,47 @@ apiRouter.post('/emprestimos/:id/devolver', (req, res) => {
     });
   } catch (err: any) {
     res.status(400).json({ error: err.message || 'Erro ao registrar devolução' });
+  }
+});
+
+apiRouter.delete('/emprestimos/:id', (req, res) => {
+  const user = authenticateRequest(req);
+  if (!user || (user.perfil !== 'admin' && user.perfil !== 'almoxarife')) {
+    res.status(403).json({ error: 'Apenas Administradores e Almoxarifes podem excluir registros de empréstimo' });
+    return;
+  }
+
+  const { id } = req.params;
+  const emp = db.prepare(`
+    SELECT e.*, p.nome as produto_nome
+    FROM emprestimos e
+    JOIN produtos p ON e.produto_id = p.id
+    WHERE e.id = ?
+  `).get(id) as any;
+
+  if (!emp) {
+    res.status(404).json({ error: 'Registro de empréstimo não encontrado' });
+    return;
+  }
+
+  try {
+    runInTransaction(() => {
+      // Se o empréstimo ainda estava em aberto, devolve o saldo ao produto antes de excluir o registro
+      if (emp.status !== 'devolvido') {
+        db.prepare('UPDATE produtos SET quantidade_atual = quantidade_atual + ? WHERE id = ?').run(
+          emp.quantidade,
+          emp.produto_id
+        );
+      }
+      db.prepare('DELETE FROM emprestimos WHERE id = ?').run(id);
+    });
+
+    res.json({
+      id: Number(id),
+      message: `Registro de empréstimo "${emp.codigo_emprestimo || '#' + emp.id}" (${emp.produto_nome}) excluído com sucesso.`,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Erro ao excluir empréstimo: ' + err.message });
   }
 });
 
@@ -2484,8 +2722,8 @@ apiRouter.post('/system/reset', (req, res) => {
 
 apiRouter.get('/system/scripts', (_req, res) => {
   try {
-    const schemaSql = fs.readFileSync(path.resolve(process.cwd(), 'schema.sql'), 'utf-8');
-    const seedSql = fs.readFileSync(path.resolve(process.cwd(), 'seed.sql'), 'utf-8');
+    const schemaSql = getSchemaSql();
+    const seedSql = getSeedSql();
     res.json({ schemaSql, seedSql });
   } catch (err: any) {
     res.status(500).json({ error: 'Erro ao ler scripts: ' + err.message });
@@ -2517,7 +2755,7 @@ apiRouter.get('/backup/info', (req, res) => {
   }
 
   try {
-    const dbPath = path.resolve(process.cwd(), 'almoxarifado.db');
+    const dbPath = DB_PATH;
     let sizeBytes = 0;
     if (fs.existsSync(dbPath)) {
       sizeBytes = fs.statSync(dbPath).size;
@@ -2581,7 +2819,7 @@ apiRouter.get('/backup/download-db', (req, res) => {
 
   const timestamp = getBackupTimestamp();
   const filename = `backup_almoxarifado_${timestamp}.db`;
-  const tempPath = path.resolve(process.cwd(), `temp_${Date.now()}_${filename}`);
+  const tempPath = path.join(os.tmpdir(), `temp_${Date.now()}_${filename}`);
 
   try {
     // 1. Executa checkpoint de WAL para garantir persistência de transações pendentes

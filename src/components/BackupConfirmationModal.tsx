@@ -12,6 +12,7 @@ import {
   Loader2
 } from 'lucide-react';
 import type { Usuario } from '../types/index.ts';
+import { useToast } from '../context/ToastContext.tsx';
 
 export type ExportFormat = 'db' | 'sql' | 'json';
 
@@ -32,6 +33,7 @@ export const BackupConfirmationModal: React.FC<BackupConfirmationModalProps> = (
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
+  const { toast } = useToast();
 
   if (!isOpen) return null;
 
@@ -84,12 +86,15 @@ export const BackupConfirmationModal: React.FC<BackupConfirmationModalProps> = (
       window.URL.revokeObjectURL(blobUrl);
 
       setSuccessMsg(`Download de "${filename}" concluído com sucesso!`);
+      toast.success('Backup Exportado', `O arquivo "${filename}" foi baixado com sucesso.`);
       setTimeout(() => {
         setSuccessMsg(null);
         onClose();
-      }, 1800);
+      }, 1500);
     } catch (err: any) {
-      setErrorMsg(err.message || 'Falha ao processar exportação do banco de dados.');
+      const msg = err.message || 'Falha ao processar exportação do banco de dados.';
+      setErrorMsg(msg);
+      toast.error('Erro na Exportação de Backup', msg);
     } finally {
       setLoading(false);
     }

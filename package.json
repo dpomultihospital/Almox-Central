@@ -1,12 +1,16 @@
 {
-  "name": "react-example",
+  "name": "almoxcontrol-salutem",
   "private": true,
-  "version": "0.0.0",
+  "version": "2.4.0",
   "type": "module",
+  "engines": {
+    "node": ">=22.0.0"
+  },
   "scripts": {
     "dev": "tsx server.ts",
     "start": "tsx server.ts",
     "build": "vite build",
+    "vercel-build": "vite build",
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit"

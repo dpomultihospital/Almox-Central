@@ -17,6 +17,8 @@ import { DocumentacaoView } from './components/DocumentacaoView.tsx';
 import { SecurityPasswordModal } from './components/SecurityPasswordModal.tsx';
 import { BackupView } from './components/BackupView.tsx';
 import { BackupConfirmationModal } from './components/BackupConfirmationModal.tsx';
+import { ConfirmDeleteModal } from './components/ConfirmDeleteModal.tsx';
+import { useToast } from './context/ToastContext.tsx';
 import type { 
   Usuario, 
   CentroCusto, 
@@ -53,6 +55,10 @@ export default function App() {
   const [isNovaRequisicaoOpen, setIsNovaRequisicaoOpen] = useState<boolean>(false);
   const [isNovaEntradaOpen, setIsNovaEntradaOpen] = useState<boolean>(false);
   const [isNovoEmprestimoOpen, setIsNovoEmprestimoOpen] = useState<boolean>(false);
+  const [isResetDbModalOpen, setIsResetDbModalOpen] = useState<boolean>(false);
+  const [isResettingDb, setIsResettingDb] = useState<boolean>(false);
+
+  const { toast } = useToast();
 
   // Carrega todas as unidades cadastradas
   const loadUnidades = useCallback(async () => {
@@ -162,6 +168,7 @@ export default function App() {
     setActiveUnidadeId(unidadeId);
     setIsGridView(true);
     setCurrentTab('dashboard');
+    toast.success('Sessão Iniciada', `Bem-vindo(a), ${user.nome} (${user.perfil.toUpperCase()}).`);
     if (user.login === 'admin' && user.usando_senha_padrao) {
       setShowSecurityModal(true);
     } else {
@@ -181,6 +188,7 @@ export default function App() {
     setIsNovoEmprestimoOpen(false);
     setIsGridView(true);
     setCurrentTab('dashboard');
+    toast.info('Sessão Encerrada', 'Você saiu do sistema com segurança.');
   };
 
   // Seleção de Módulo a partir do Grid
@@ -194,11 +202,12 @@ export default function App() {
   };
 
   // Reset do banco de dados para estado limpo inicial
-  const handleResetDb = async () => {
-    if (!window.confirm('Tem certeza de que deseja restaurar a base SQLite para o estado inicial limpo (apenas o usuário admin)?')) {
-      return;
-    }
+  const handleResetDb = () => {
+    setIsResetDbModalOpen(true);
+  };
 
+  const handleConfirmResetDb = async () => {
+    setIsResettingDb(true);
     try {
       const res = await fetch('/api/system/reset', {
         method: 'POST',
@@ -206,14 +215,20 @@ export default function App() {
       });
       const data = await res.json();
       if (res.ok) {
-        alert(data.message || 'Banco de dados restaurado para o estado limpo inicial.');
+        toast.success(
+          'Base de Dados Restaurada',
+          data.message || 'Banco de dados restaurado para o estado limpo inicial.'
+        );
+        setIsResetDbModalOpen(false);
         loadUnidades();
         loadData();
       } else {
-        alert(data.error || 'Erro ao restaurar banco.');
+        toast.error('Erro ao Restaurar Base', data.error || 'Erro ao restaurar banco.');
       }
-    } catch (err) {
-      alert('Falha ao comunicar com o servidor.');
+    } catch {
+      toast.error('Falha de Conexão', 'Não foi possível comunicar com o servidor.');
+    } finally {
+      setIsResettingDb(false);
     }
   };
 
@@ -340,6 +355,7 @@ export default function App() {
               produtos={produtos}
               centrosCusto={centrosCusto}
               currentUser={currentUser}
+              activeUnidade={activeUnidade}
               onRefresh={loadData}
               isCreateModalOpen={isNovaRequisicaoOpen}
               setIsCreateModalOpen={setIsNovaRequisicaoOpen}
@@ -353,6 +369,7 @@ export default function App() {
               produtos={produtos}
               centrosCusto={centrosCusto}
               currentUser={currentUser}
+              activeUnidade={activeUnidade}
               onRefresh={loadData}
               isCreateModalOpen={isNovoEmprestimoOpen}
               setIsCreateModalOpen={setIsNovoEmprestimoOpen}
@@ -365,6 +382,7 @@ export default function App() {
               produtos={produtos}
               movimentacoes={movimentacoes}
               currentUser={currentUser}
+              activeUnidade={activeUnidade}
               onRefresh={loadData}
               isCreateModalOpen={isNovaEntradaOpen}
               setIsCreateModalOpen={setIsNovaEntradaOpen}
@@ -385,6 +403,7 @@ export default function App() {
             <MovimentacoesView
               movimentacoes={movimentacoes}
               currentUser={currentUser}
+              activeUnidade={activeUnidade}
               onRefresh={loadData}
             />
           )}
@@ -467,6 +486,16 @@ export default function App() {
           onClose={() => setIsBackupModalOpen(false)}
         />
       )}
+
+      <ConfirmDeleteModal
+        isOpen={isResetDbModalOpen}
+        title="Restaurar Base de Dados Inicial"
+        entityName="Banco SQLite (almoxarifado.db)"
+        description="Esta ação redefinirá todas as tabelas para o estado limpo de instalação (mantendo apenas o usuário administrador padrão e unidades básicas)."
+        isProcessing={isResettingDb}
+        onConfirm={handleConfirmResetDb}
+        onClose={() => setIsResetDbModalOpen(false)}
+      />
     </div>
   );
 }

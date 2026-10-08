@@ -14,6 +14,7 @@ import {
   Database
 } from 'lucide-react';
 import type { Usuario, EmpresaUnidade } from '../types/index.ts';
+import { useToast } from '../context/ToastContext.tsx';
 
 interface PerfilViewProps {
   currentUser: Usuario;
@@ -32,6 +33,8 @@ export const PerfilView: React.FC<PerfilViewProps> = ({
   onVoltar,
   onOpenBackupModal,
 }) => {
+  const { toast } = useToast();
+
   const getPerfilBadge = (perfil: string) => {
     switch (perfil) {
       case 'admin':
@@ -125,7 +128,10 @@ export const PerfilView: React.FC<PerfilViewProps> = ({
                 <button
                   key={u.id}
                   type="button"
-                  onClick={() => onSelectUnidade(u.id)}
+                  onClick={() => {
+                    onSelectUnidade(u.id);
+                    toast.info('Unidade Hospitalar Alterada', `Operando agora em: ${u.codigo} - ${u.nome}.`);
+                  }}
                   className={`w-full p-3 rounded-lg border text-left flex items-start justify-between gap-3 transition-all cursor-pointer ${
                     isSelected
                       ? 'border-teal-600 bg-teal-50/60 shadow-sm'
@@ -209,11 +215,11 @@ export const PerfilView: React.FC<PerfilViewProps> = ({
             const confirmaSenha = (form.elements.namedItem('confirmaSenha') as HTMLInputElement).value;
 
             if (novaSenha.length < 6) {
-              alert('A nova senha deve ter no mínimo 6 caracteres.');
+              toast.error('Senha Inválida', 'A nova senha deve ter no mínimo 6 caracteres.');
               return;
             }
             if (novaSenha !== confirmaSenha) {
-              alert('A confirmação não coincide com a nova senha.');
+              toast.error('Senhas Divergentes', 'A confirmação não coincide com a nova senha.');
               return;
             }
 
@@ -228,13 +234,13 @@ export const PerfilView: React.FC<PerfilViewProps> = ({
               });
               const data = await res.json();
               if (res.ok) {
-                alert('Senha alterada com sucesso!');
+                toast.success('Senha Atualizada', data.message || 'Sua senha de operador foi alterada com sucesso!');
                 form.reset();
               } else {
-                alert(data.error || 'Erro ao alterar senha.');
+                toast.error('Erro ao Alterar Senha', data.error || 'Erro ao alterar senha.');
               }
             } catch {
-              alert('Falha ao comunicar com o servidor.');
+              toast.error('Falha de Conexão', 'Não foi possível comunicar com o servidor.');
             }
           }}
           className="space-y-3"

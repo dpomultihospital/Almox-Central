@@ -19,9 +19,12 @@ import {
   Building2,
   Mail,
   CreditCard,
-  UserCheck
+  UserCheck,
+  Trash2
 } from 'lucide-react';
 import type { Usuario, CentroCusto, PerfilUsuario, EmpresaUnidade } from '../types/index.ts';
+import { useToast } from '../context/ToastContext.tsx';
+import { ConfirmDeleteModal } from './ConfirmDeleteModal.tsx';
 
 interface UsuariosViewProps {
   usuarios: Usuario[];
@@ -82,7 +85,9 @@ export const UsuariosView: React.FC<UsuariosViewProps> = ({
   const pageSize = 8;
   const [isProcessing, setIsProcessing] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [deletingUser, setDeletingUser] = useState<Usuario | null>(null);
 
+  const { toast } = useToast();
   const isAdmin = currentUser?.perfil === 'admin';
 
   // Filtragem dos usuários
@@ -189,13 +194,17 @@ export const UsuariosView: React.FC<UsuariosViewProps> = ({
     }
 
     if (!formNome || !formLogin || !formPerfil) {
-      setErrorMsg('Nome, login e perfil são campos obrigatórios.');
+      const msg = 'Nome, login e perfil são campos obrigatórios.';
+      setErrorMsg(msg);
+      toast.error('Campos Obrigatórios', msg);
       setActiveFormTab('identificacao');
       return;
     }
 
     if (formPerfil === 'requisitante' && !formCcId) {
-      setErrorMsg('Centro de Custo é obrigatório para usuários Requisitantes.');
+      const msg = 'Centro de Custo é obrigatório para usuários Requisitantes.';
+      setErrorMsg(msg);
+      toast.error('Centro de Custo Obrigatório', msg);
       setActiveFormTab('identificacao');
       return;
     }
@@ -237,10 +246,58 @@ export const UsuariosView: React.FC<UsuariosViewProps> = ({
         throw new Error(data.error || 'Erro ao salvar usuário.');
       }
 
+      if (formMode === 'create') {
+        toast.success(
+          'Usuário Cadastrado',
+          `O operador "${payload.nome}" (@${payload.login}) foi adicionado ao sistema.`
+        );
+      } else {
+        toast.success(
+          'Usuário Atualizado',
+          `O cadastro do operador "${payload.nome}" (@${payload.login}) foi atualizado.`
+        );
+      }
+
       setIsFormOpen(false);
       onRefresh();
     } catch (err: any) {
-      setErrorMsg(err.message || 'Erro ao processar solicitação.');
+      const msg = err.message || 'Erro ao processar solicitação.';
+      setErrorMsg(msg);
+      toast.error(
+        formMode === 'create' ? 'Erro ao Cadastrar Usuário' : 'Erro ao Editar Usuário',
+        msg
+      );
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  const handleConfirmDelete = async () => {
+    if (!deletingUser) return;
+    setIsProcessing(true);
+    try {
+      const res = await fetch(`/api/usuarios/${deletingUser.id}`, {
+        method: 'DELETE',
+        headers: {
+          'Authorization': `user:${currentUser?.id}`,
+        },
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Erro ao excluir usuário.');
+      }
+
+      toast.success(
+        'Usuário Excluído',
+        data.message || `O operador "${deletingUser.nome}" (@${deletingUser.login}) foi excluído.`
+      );
+      if (editingUserId === deletingUser.id) {
+        setIsFormOpen(false);
+      }
+      setDeletingUser(null);
+      onRefresh();
+    } catch (err: any) {
+      toast.error('Erro ao Excluir Usuário', err.message || 'Falha ao excluir usuário.');
     } finally {
       setIsProcessing(false);
     }
@@ -624,26 +681,45 @@ export const UsuariosView: React.FC<UsuariosViewProps> = ({
             )}
 
             {/* Rodapé do Formulário: Botões SALVAR e VOLTAR */}
-            <div className="pt-4 border-t border-slate-200 flex items-center justify-end gap-3">
-              <button
-                type="button"
-                onClick={() => setIsFormOpen(false)}
-                className="bg-teal-600 hover:bg-teal-700 text-white font-medium px-4 py-2 rounded text-xs flex items-center gap-1.5 transition-all shadow uppercase tracking-wide cursor-pointer"
-              >
-                <ArrowLeft className="w-4 h-4" />
-                <span>VOLTAR</span>
-              </button>
+            <div className="pt-4 border-t border-slate-200 flex items-center justify-between gap-3">
+              <div>
+                {formMode === 'edit' && isAdmin && editingUserId && editingUserId !== currentUser?.id && formLogin !== 'admin' && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const target = usuarios.find((usr) => usr.id === editingUserId);
+                      if (target) setDeletingUser(target);
+                    }}
+                    disabled={isProcessing}
+                    className="bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 font-semibold px-4 py-2 rounded text-xs flex items-center gap-1.5 transition-all uppercase tracking-wide cursor-pointer disabled:opacity-50"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                    <span>EXCLUIR USUÁRIO</span>
+                  </button>
+                )}
+              </div>
 
-              {formMode !== 'view' && (
+              <div className="flex items-center gap-3">
                 <button
-                  type="submit"
-                  disabled={isProcessing}
-                  className="bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white font-medium px-5 py-2 rounded text-xs flex items-center gap-1.5 transition-all shadow uppercase tracking-wide cursor-pointer disabled:opacity-50"
+                  type="button"
+                  onClick={() => setIsFormOpen(false)}
+                  className="bg-teal-600 hover:bg-teal-700 text-white font-medium px-4 py-2 rounded text-xs flex items-center gap-1.5 transition-all shadow uppercase tracking-wide cursor-pointer"
                 >
-                  <Save className="w-4 h-4" />
-                  <span>{isProcessing ? 'SALVANDO...' : 'SALVAR'}</span>
+                  <ArrowLeft className="w-4 h-4" />
+                  <span>VOLTAR</span>
                 </button>
-              )}
+
+                {formMode !== 'view' && (
+                  <button
+                    type="submit"
+                    disabled={isProcessing}
+                    className="bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white font-medium px-5 py-2 rounded text-xs flex items-center gap-1.5 transition-all shadow uppercase tracking-wide cursor-pointer disabled:opacity-50"
+                  >
+                    <Save className="w-4 h-4" />
+                    <span>{isProcessing ? 'SALVANDO...' : 'SALVAR'}</span>
+                  </button>
+                )}
+              </div>
             </div>
           </form>
         </div>
@@ -819,14 +895,24 @@ export const UsuariosView: React.FC<UsuariosViewProps> = ({
                           <Eye className="w-4 h-4" />
                         </button>
                         {isAdmin && (
-                          <button
-                            type="button"
-                            onClick={() => handleEditar(u)}
-                            className="p-1.5 rounded hover:bg-teal-100 text-teal-700 transition-colors"
-                            title="Editar usuário"
-                          >
-                            <Edit2 className="w-4 h-4" />
-                          </button>
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => handleEditar(u)}
+                              className="p-1.5 rounded hover:bg-teal-100 text-teal-700 transition-colors cursor-pointer"
+                              title="Editar usuário"
+                            >
+                              <Edit2 className="w-4 h-4" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setDeletingUser(u)}
+                              className="p-1.5 rounded hover:bg-rose-100 text-rose-600 transition-colors cursor-pointer"
+                              title="Excluir usuário"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          </>
                         )}
                       </div>
                     </td>
@@ -894,6 +980,17 @@ export const UsuariosView: React.FC<UsuariosViewProps> = ({
           </div>
         </div>
       </div>
+
+      <ConfirmDeleteModal
+        isOpen={!!deletingUser}
+        title="Excluir Usuário do Sistema"
+        entityCode={deletingUser?.codigo || (deletingUser ? `USR-${String(deletingUser.id).padStart(4, '0')}` : undefined)}
+        entityName={deletingUser ? `${deletingUser.nome} (@${deletingUser.login})` : ''}
+        description="Esta ação removerá o operador do sistema. O histórico contábil e de auditoria anterior será preservado."
+        isProcessing={isProcessing}
+        onConfirm={handleConfirmDelete}
+        onClose={() => setDeletingUser(null)}
+      />
     </div>
   );
 };

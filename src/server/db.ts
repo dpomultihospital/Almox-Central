@@ -1,24 +1,265 @@
 import { DatabaseSync } from 'node:sqlite';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const DB_PATH = path.resolve(process.cwd(), 'almoxarifado.db');
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const PROJECT_ROOT = path.resolve(__dirname, '../..');
+
+const FALLBACK_SCHEMA_SQL = `
+PRAGMA foreign_keys = ON;
+
+CREATE TABLE IF NOT EXISTS empresas_unidades (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    codigo TEXT UNIQUE NOT NULL,
+    nome TEXT NOT NULL,
+    cnpj TEXT,
+    endereco TEXT,
+    cidade TEXT,
+    uf TEXT,
+    ativo INTEGER NOT NULL DEFAULT 1,
+    criado_em DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_empresas_codigo ON empresas_unidades (codigo);
+
+CREATE TABLE IF NOT EXISTS centros_custo (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    codigo TEXT UNIQUE NOT NULL,
+    nome TEXT NOT NULL,
+    departamento TEXT NOT NULL,
+    responsavel TEXT NOT NULL,
+    empresa_id INTEGER REFERENCES empresas_unidades(id) ON DELETE SET NULL,
+    ativo INTEGER NOT NULL DEFAULT 1,
+    criado_em DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_centros_custo_codigo ON centros_custo (codigo);
+CREATE INDEX IF NOT EXISTS idx_centros_custo_ativo ON centros_custo (ativo);
+
+CREATE TABLE IF NOT EXISTS usuarios (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    codigo TEXT,
+    nome TEXT NOT NULL,
+    login TEXT UNIQUE NOT NULL,
+    senha_hash TEXT NOT NULL,
+    cpf TEXT,
+    email TEXT,
+    perfil TEXT NOT NULL CHECK (perfil IN ('admin', 'almoxarife', 'requisitante')),
+    centro_custo_id INTEGER REFERENCES centros_custo(id) ON DELETE SET NULL,
+    empresa_id INTEGER REFERENCES empresas_unidades(id) ON DELETE SET NULL,
+    ativo INTEGER NOT NULL DEFAULT 1,
+    criado_em DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    ultimo_acesso DATETIME
+);
+CREATE INDEX IF NOT EXISTS idx_usuarios_login ON usuarios (login);
+CREATE INDEX IF NOT EXISTS idx_usuarios_perfil ON usuarios (perfil);
+CREATE INDEX IF NOT EXISTS idx_usuarios_centro_custo ON usuarios (centro_custo_id);
+
+CREATE TABLE IF NOT EXISTS produtos (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    codigo TEXT UNIQUE NOT NULL,
+    nome TEXT NOT NULL,
+    descricao TEXT,
+    unidade_medida TEXT NOT NULL,
+    tipo TEXT NOT NULL CHECK (tipo IN ('consumivel', 'nao_consumivel')),
+    estoque_minimo REAL NOT NULL DEFAULT 0 CHECK (estoque_minimo >= 0),
+    estoque_maximo REAL NOT NULL DEFAULT 0 CHECK (estoque_maximo >= 0),
+    quantidade_atual REAL NOT NULL DEFAULT 0 CHECK (quantidade_atual >= 0),
+    valor_unitario REAL NOT NULL DEFAULT 0,
+    localizacao TEXT,
+    ativo INTEGER NOT NULL DEFAULT 1,
+    criado_em DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_produtos_codigo ON produtos (codigo);
+CREATE INDEX IF NOT EXISTS idx_produtos_tipo ON produtos (tipo);
+CREATE INDEX IF NOT EXISTS idx_produtos_ativo ON produtos (ativo);
+
+CREATE TABLE IF NOT EXISTS requisicoes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    numero_requisicao TEXT UNIQUE NOT NULL,
+    centro_custo_id INTEGER NOT NULL REFERENCES centros_custo(id),
+    solicitante_id INTEGER NOT NULL REFERENCES usuarios(id),
+    almoxarife_id INTEGER REFERENCES usuarios(id),
+    data_solicitacao DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    data_atendimento DATETIME,
+    status TEXT NOT NULL DEFAULT 'pendente' CHECK (status IN ('pendente', 'aprovada_atendida', 'rejeitada', 'cancelada')),
+    prioridade TEXT NOT NULL DEFAULT 'normal' CHECK (prioridade IN ('normal', 'urgente')),
+    motivo_rejeicao TEXT,
+    observacao TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_requisicoes_numero ON requisicoes (numero_requisicao);
+CREATE INDEX IF NOT EXISTS idx_requisicoes_status ON requisicoes (status);
+CREATE INDEX IF NOT EXISTS idx_requisicoes_centro_custo ON requisicoes (centro_custo_id);
+CREATE INDEX IF NOT EXISTS idx_requisicoes_solicitante ON requisicoes (solicitante_id);
+
+CREATE TABLE IF NOT EXISTS itens_requisicao (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    requisicao_id INTEGER NOT NULL REFERENCES requisicoes(id) ON DELETE CASCADE,
+    produto_id INTEGER NOT NULL REFERENCES produtos(id),
+    quantidade_solicitada REAL NOT NULL CHECK (quantidade_solicitada > 0),
+    quantidade_atendida REAL NOT NULL DEFAULT 0 CHECK (quantidade_atendida >= 0),
+    status_item TEXT NOT NULL DEFAULT 'pendente' CHECK (status_item IN ('pendente', 'aprovado', 'negado')),
+    analisado_por_id INTEGER REFERENCES usuarios(id),
+    data_analise DATETIME,
+    motivo_decisao TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_itens_requisicao_req ON itens_requisicao (requisicao_id);
+CREATE INDEX IF NOT EXISTS idx_itens_requisicao_prod ON itens_requisicao (produto_id);
+CREATE INDEX IF NOT EXISTS idx_itens_requisicao_status ON itens_requisicao (status_item);
+
+CREATE TABLE IF NOT EXISTS historico_requisicoes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    requisicao_id INTEGER NOT NULL REFERENCES requisicoes(id) ON DELETE CASCADE,
+    item_requisicao_id INTEGER REFERENCES itens_requisicao(id) ON DELETE SET NULL,
+    produto_id INTEGER REFERENCES produtos(id) ON DELETE SET NULL,
+    usuario_id INTEGER NOT NULL REFERENCES usuarios(id),
+    acao TEXT NOT NULL CHECK (acao IN (
+        'criacao_requisicao',
+        'inclusao_item',
+        'aprovacao_item',
+        'negacao_item',
+        'aprovacao_total',
+        'aprovacao_parcial',
+        'rejeicao_total',
+        'cancelamento'
+    )),
+    status_anterior TEXT,
+    status_novo TEXT,
+    quantidade_solicitada REAL,
+    quantidade_atendida REAL,
+    detalhes TEXT NOT NULL,
+    justificativa TEXT,
+    data_registro DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_hist_req_requisicao ON historico_requisicoes (requisicao_id);
+CREATE INDEX IF NOT EXISTS idx_hist_req_item ON historico_requisicoes (item_requisicao_id);
+CREATE INDEX IF NOT EXISTS idx_hist_req_usuario ON historico_requisicoes (usuario_id);
+CREATE INDEX IF NOT EXISTS idx_hist_req_data ON historico_requisicoes (data_registro);
+
+CREATE TABLE IF NOT EXISTS movimentacoes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    tipo TEXT NOT NULL CHECK (tipo IN ('entrada', 'saida', 'estorno_entrada', 'estorno_saida')),
+    produto_id INTEGER NOT NULL REFERENCES produtos(id),
+    quantidade REAL NOT NULL CHECK (quantidade > 0),
+    centro_custo_id INTEGER REFERENCES centros_custo(id),
+    usuario_id INTEGER NOT NULL REFERENCES usuarios(id),
+    documento_referencia TEXT,
+    numero_lote TEXT,
+    data_validade DATE,
+    valor_unitario REAL,
+    observacao TEXT,
+    data_movimentacao DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_movimentacoes_produto ON movimentacoes (produto_id);
+CREATE INDEX IF NOT EXISTS idx_movimentacoes_tipo ON movimentacoes (tipo);
+CREATE INDEX IF NOT EXISTS idx_movimentacoes_centro_custo ON movimentacoes (centro_custo_id);
+CREATE INDEX IF NOT EXISTS idx_movimentacoes_data ON movimentacoes (data_movimentacao);
+
+CREATE TABLE IF NOT EXISTS emprestimos (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    codigo_emprestimo TEXT,
+    produto_id INTEGER NOT NULL REFERENCES produtos(id),
+    quantidade REAL NOT NULL DEFAULT 1 CHECK (quantidade > 0),
+    centro_custo_id INTEGER NOT NULL REFERENCES centros_custo(id),
+    solicitante_id INTEGER NOT NULL REFERENCES usuarios(id),
+    almoxarife_liberacao_id INTEGER NOT NULL REFERENCES usuarios(id),
+    almoxarife_recebimento_id INTEGER REFERENCES usuarios(id),
+    data_emprestimo DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    data_prevista_devolucao DATE NOT NULL,
+    data_devolucao DATETIME,
+    status TEXT NOT NULL DEFAULT 'emprestado' CHECK (status IN ('emprestado', 'devolvido', 'atrasado')),
+    condicao_saida TEXT,
+    condicao_devolucao TEXT,
+    observacao TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_emprestimos_produto ON emprestimos (produto_id);
+CREATE INDEX IF NOT EXISTS idx_emprestimos_status ON emprestimos (status);
+CREATE INDEX IF NOT EXISTS idx_emprestimos_solicitante ON emprestimos (solicitante_id);
+`;
+
+const FALLBACK_SEED_SQL = `
+PRAGMA foreign_keys = ON;
+
+INSERT OR IGNORE INTO empresas_unidades (id, codigo, nome, cnpj, endereco, cidade, uf, ativo) VALUES
+(1, '001', 'Unidade Principal - Almoxarifado Central', NULL, NULL, NULL, NULL, 1);
+
+INSERT OR IGNORE INTO usuarios (id, codigo, nome, login, senha_hash, cpf, email, perfil, centro_custo_id, empresa_id, ativo, ultimo_acesso) VALUES
+(1, 'USR-0001', 'Administrador do Sistema', 'admin', '240be518fabd2724ddb6f04eeb1da5967448d7e831c08c8fa822809f74c720a9', NULL, NULL, 'admin', NULL, 1, 1, CURRENT_TIMESTAMP);
+`;
+
+export function getSchemaSql(): string {
+  const candidates = [
+    path.resolve(process.cwd(), 'schema.sql'),
+    path.resolve(PROJECT_ROOT, 'schema.sql'),
+  ];
+  for (const p of candidates) {
+    if (fs.existsSync(p)) {
+      return fs.readFileSync(p, 'utf-8');
+    }
+  }
+  return FALLBACK_SCHEMA_SQL;
+}
+
+export function getSeedSql(): string {
+  const candidates = [
+    path.resolve(process.cwd(), 'seed.sql'),
+    path.resolve(PROJECT_ROOT, 'seed.sql'),
+  ];
+  for (const p of candidates) {
+    if (fs.existsSync(p)) {
+      return fs.readFileSync(p, 'utf-8');
+    }
+  }
+  return FALLBACK_SEED_SQL;
+}
+
+function resolveDatabasePath(): string {
+  if (process.env.SQLITE_DB_PATH) {
+    return path.resolve(process.env.SQLITE_DB_PATH);
+  }
+
+  const isVercel = Boolean(process.env.VERCEL);
+  const localDbCandidates = [
+    path.resolve(process.cwd(), 'almoxarifado.db'),
+    path.resolve(PROJECT_ROOT, 'almoxarifado.db'),
+  ];
+  const bundledDbPath = localDbCandidates.find((p) => fs.existsSync(p)) || localDbCandidates[0];
+
+  if (isVercel) {
+    const tmpDbPath = path.join(os.tmpdir(), 'almoxarifado.db');
+    if (!fs.existsSync(tmpDbPath) && fs.existsSync(bundledDbPath)) {
+      try {
+        fs.copyFileSync(bundledDbPath, tmpDbPath);
+      } catch (err) {
+        console.warn('Não foi possível copiar banco inicial para /tmp:', err);
+      }
+    }
+    return tmpDbPath;
+  }
+
+  return bundledDbPath;
+}
+
+export const DB_PATH = resolveDatabasePath();
 
 export const db = new DatabaseSync(DB_PATH);
 
 // Configurações vitais de integridade e desempenho
 db.exec('PRAGMA foreign_keys = ON;');
-db.exec('PRAGMA journal_mode = WAL;');
+try {
+  db.exec('PRAGMA journal_mode = WAL;');
+} catch {
+  // Fallback caso o sistema de arquivos não suporte WAL
+}
 
 /**
  * Inicializa o banco de dados executando schema.sql e seed.sql se necessário
  */
 export function initDatabase() {
-  const schemaPath = path.resolve(process.cwd(), 'schema.sql');
-  const seedPath = path.resolve(process.cwd(), 'seed.sql');
+  const schemaSql = getSchemaSql();
+  const seedSql = getSeedSql();
 
-  if (fs.existsSync(schemaPath)) {
-    const schemaSql = fs.readFileSync(schemaPath, 'utf-8');
+  if (schemaSql) {
     db.exec(schemaSql);
   }
 
@@ -26,19 +267,18 @@ export function initDatabase() {
   try {
     const tableCheck = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='empresas_unidades'").get();
     if (!tableCheck) {
-      if (fs.existsSync(schemaPath)) {
-        db.exec(fs.readFileSync(schemaPath, 'utf-8'));
+      if (schemaSql) {
+        db.exec(schemaSql);
       }
-      if (fs.existsSync(seedPath)) {
-        db.exec(fs.readFileSync(seedPath, 'utf-8'));
+      if (seedSql) {
+        db.exec(seedSql);
       }
       return;
     }
 
     const countResult = db.prepare('SELECT COUNT(*) as count FROM usuarios').get() as { count: number };
     if (!countResult || countResult.count === 0) {
-      if (fs.existsSync(seedPath)) {
-        const seedSql = fs.readFileSync(seedPath, 'utf-8');
+      if (seedSql) {
         db.exec(seedSql);
       }
     }
@@ -311,8 +551,8 @@ export function runInTransaction<T>(callback: () => T): T {
  * Reseta o banco de dados completamente para o estado do Seed
  */
 export function resetDatabase() {
-  const schemaPath = path.resolve(process.cwd(), 'schema.sql');
-  const seedPath = path.resolve(process.cwd(), 'seed.sql');
+  const schemaSql = getSchemaSql();
+  const seedSql = getSeedSql();
 
   runInTransaction(() => {
     // Desativa temporariamente chaves para limpar tabelas
@@ -330,11 +570,11 @@ export function resetDatabase() {
     `);
     db.exec('PRAGMA foreign_keys = ON;');
 
-    if (fs.existsSync(schemaPath)) {
-      db.exec(fs.readFileSync(schemaPath, 'utf-8'));
+    if (schemaSql) {
+      db.exec(schemaSql);
     }
-    if (fs.existsSync(seedPath)) {
-      db.exec(fs.readFileSync(seedPath, 'utf-8'));
+    if (seedSql) {
+      db.exec(seedSql);
     }
 
     try {
