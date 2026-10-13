@@ -3,11 +3,11 @@ import { Sidebar } from './components/Sidebar.tsx';
 import { TopBar } from './components/TopBar.tsx';
 import { LoginView } from './components/LoginView.tsx';
 import { ModuleGridView } from './components/ModuleGridView.tsx';
-import { DashboardView } from './components/DashboardView.tsx';
 import { RequisicoesView } from './components/RequisicoesView.tsx';
 import { EmprestimosView } from './components/EmprestimosView.tsx';
 import { EntradasView } from './components/EntradasView.tsx';
 import { ProdutosView } from './components/ProdutosView.tsx';
+import { FornecedoresView } from './components/FornecedoresView.tsx';
 import { MovimentacoesView } from './components/MovimentacoesView.tsx';
 import { CentrosCustoView } from './components/CentrosCustoView.tsx';
 import { UsuariosView } from './components/UsuariosView.tsx';
@@ -23,8 +23,10 @@ import type {
   Usuario, 
   CentroCusto, 
   Produto, 
+  Fornecedor,
   Requisicao, 
   Emprestimo, 
+  EmprestimoInstitucional,
   Movimentacao, 
   DashboardStats,
   EmpresaUnidade
@@ -40,14 +42,17 @@ export default function App() {
 
   // Navegação: Modo Grade vs Tela de Módulo
   const [isGridView, setIsGridView] = useState<boolean>(true);
-  const [currentTab, setCurrentTab] = useState<string>('dashboard');
+  const [currentTab, setCurrentTab] = useState<string>('relatorios');
+  const [isSidebarOpen, setIsSidebarOpen] = useState<boolean>(false);
 
   // Dados do Sistema
   const [centrosCusto, setCentrosCusto] = useState<CentroCusto[]>([]);
   const [usuarios, setUsuarios] = useState<Usuario[]>([]);
+  const [fornecedores, setFornecedores] = useState<Fornecedor[]>([]);
   const [produtos, setProdutos] = useState<Produto[]>([]);
   const [requisicoes, setRequisicoes] = useState<Requisicao[]>([]);
   const [emprestimos, setEmprestimos] = useState<Emprestimo[]>([]);
+  const [emprestimosInstitucionais, setEmprestimosInstitucionais] = useState<EmprestimoInstitucional[]>([]);
   const [movimentacoes, setMovimentacoes] = useState<Movimentacao[]>([]);
   const [stats, setStats] = useState<DashboardStats | null>(null);
 
@@ -92,18 +97,22 @@ export default function App() {
         statsRes,
         usersRes,
         ccRes,
+        fornRes,
         prodRes,
         reqRes,
         empRes,
+        empInstRes,
         movRes
       ] = await Promise.all([
         fetch('/api/auth/me', { headers: authHeader }),
         fetch('/api/dashboard/stats', { headers: authHeader }),
         fetch('/api/usuarios', { headers: authHeader }),
         fetch('/api/centros-custo', { headers: authHeader }),
+        fetch('/api/fornecedores?apenas_ativos=false', { headers: authHeader }),
         fetch('/api/produtos?apenas_ativos=false', { headers: authHeader }),
         fetch('/api/requisicoes', { headers: authHeader }),
         fetch('/api/emprestimos', { headers: authHeader }),
+        fetch('/api/emprestimos-institucionais', { headers: authHeader }),
         fetch('/api/movimentacoes?limite=150', { headers: authHeader }),
       ]);
 
@@ -144,9 +153,11 @@ export default function App() {
       if (statsRes.ok) setStats(await statsRes.json());
       if (usersRes.ok) setUsuarios(await usersRes.json());
       if (ccRes.ok) setCentrosCusto(await ccRes.json());
+      if (fornRes.ok) setFornecedores(await fornRes.json());
       if (prodRes.ok) setProdutos(await prodRes.json());
       if (reqRes.ok) setRequisicoes(await reqRes.json());
       if (empRes.ok) setEmprestimos(await empRes.json());
+      if (empInstRes.ok) setEmprestimosInstitucionais(await empInstRes.json());
       if (movRes.ok) setMovimentacoes(await movRes.json());
     } catch (err) {
       console.error('Erro ao sincronizar dados com o servidor:', err);
@@ -167,7 +178,7 @@ export default function App() {
     setCurrentUser(user);
     setActiveUnidadeId(unidadeId);
     setIsGridView(true);
-    setCurrentTab('dashboard');
+    setCurrentTab('relatorios');
     toast.success('Sessão Iniciada', `Bem-vindo(a), ${user.nome} (${user.perfil.toUpperCase()}).`);
     if (user.login === 'admin' && user.usando_senha_padrao) {
       setShowSecurityModal(true);
@@ -187,7 +198,7 @@ export default function App() {
     setIsNovaEntradaOpen(false);
     setIsNovoEmprestimoOpen(false);
     setIsGridView(true);
-    setCurrentTab('dashboard');
+    setCurrentTab('relatorios');
     toast.info('Sessão Encerrada', 'Você saiu do sistema com segurança.');
   };
 
@@ -285,70 +296,53 @@ export default function App() {
   // 3. SE ESTIVER DENTRO DE UM MÓDULO: EXIBE A INTERFACE DE TRABALHO
   // =========================================================================
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-[#f8f9fa] font-sans antialiased text-slate-800">
-      {/* Barra Lateral com Módulos */}
-      <Sidebar
+    <div className="flex flex-col h-screen w-screen overflow-hidden bg-[#f8f9fa] font-sans antialiased text-slate-800">
+      {/* Barra Superior em largura total com Logo sempre visível e botão para alternar o Menu Lateral */}
+      <TopBar
         currentTab={currentTab}
-        onSelectTab={(tab) => setCurrentTab(tab)}
         currentUser={currentUser}
         activeUnidade={activeUnidade}
+        produtos={produtos}
+        requisicoes={requisicoes}
+        isSidebarOpen={isSidebarOpen}
+        onToggleSidebar={() => setIsSidebarOpen((prev) => !prev)}
+        onSelectTab={(tab) => setCurrentTab(tab)}
+        onOpenNovaRequisicao={() => {
+          setCurrentTab('requisicoes');
+          setIsNovaRequisicaoOpen(true);
+        }}
+        onOpenNovaEntrada={() => {
+          setCurrentTab('entradas');
+          setIsNovaEntradaOpen(true);
+        }}
+        onOpenNovoEmprestimo={() => {
+          setCurrentTab('emprestimos');
+          setIsNovoEmprestimoOpen(true);
+        }}
+        onResetDb={handleResetDb}
         onGoToGrid={() => setIsGridView(true)}
         onLogout={handleLogout}
-        pendingRequisitionsCount={pendingReqCount}
-        overdueLoansCount={overdueLoanCount}
-        lowStockCount={lowStockCount}
+        onOpenBackupModal={() => setIsBackupModalOpen(true)}
       />
 
-      {/* Conteúdo Principal com Barra Superior */}
-      <div className="flex flex-col flex-1 min-w-0 h-full overflow-hidden">
-        <TopBar
-          currentTab={currentTab}
-          currentUser={currentUser}
-          activeUnidade={activeUnidade}
-          produtos={produtos}
-          requisicoes={requisicoes}
-          onSelectTab={(tab) => setCurrentTab(tab)}
-          onOpenNovaRequisicao={() => {
-            setCurrentTab('requisicoes');
-            setIsNovaRequisicaoOpen(true);
-          }}
-          onOpenNovaEntrada={() => {
-            setCurrentTab('entradas');
-            setIsNovaEntradaOpen(true);
-          }}
-          onOpenNovoEmprestimo={() => {
-            setCurrentTab('emprestimos');
-            setIsNovoEmprestimoOpen(true);
-          }}
-          onResetDb={handleResetDb}
-          onGoToGrid={() => setIsGridView(true)}
-          onLogout={handleLogout}
-          onOpenBackupModal={() => setIsBackupModalOpen(true)}
-        />
+      {/* Área de Trabalho: Menu Lateral Ocultável + Conteúdo Principal */}
+      <div className="flex flex-1 min-h-0 overflow-hidden">
+        {isSidebarOpen && (
+          <Sidebar
+            currentTab={currentTab}
+            onSelectTab={(tab) => setCurrentTab(tab)}
+            currentUser={currentUser}
+            activeUnidade={activeUnidade}
+            onGoToGrid={() => setIsGridView(true)}
+            onLogout={handleLogout}
+            onCloseSidebar={() => setIsSidebarOpen(false)}
+            pendingRequisitionsCount={pendingReqCount}
+            overdueLoansCount={overdueLoanCount}
+            lowStockCount={lowStockCount}
+          />
+        )}
 
         <main className="flex-1 overflow-y-auto p-6">
-          {currentTab === 'dashboard' && (
-            <DashboardView
-              stats={stats}
-              onNavigate={(tab) => {
-                if (tab === 'grid') {
-                  setIsGridView(true);
-                } else {
-                  setCurrentTab(tab);
-                }
-              }}
-              currentUser={currentUser}
-              onOpenNovaEntrada={() => {
-                setCurrentTab('entradas');
-                setIsNovaEntradaOpen(true);
-              }}
-              onOpenNovaRequisicao={() => {
-                setCurrentTab('requisicoes');
-                setIsNovaRequisicaoOpen(true);
-              }}
-            />
-          )}
-
           {currentTab === 'requisicoes' && (
             <RequisicoesView
               requisicoes={requisicoes}
@@ -363,23 +357,38 @@ export default function App() {
             />
           )}
 
+          {currentTab === 'fornecedores' && (
+            <FornecedoresView
+              fornecedores={fornecedores}
+              currentUser={currentUser}
+              onRefresh={loadData}
+              onVoltar={() => setIsGridView(true)}
+              onNavigate={(tab) => setCurrentTab(tab)}
+            />
+          )}
+
           {currentTab === 'emprestimos' && (
             <EmprestimosView
               emprestimos={emprestimos}
+              emprestimosInstitucionais={emprestimosInstitucionais}
               produtos={produtos}
+              fornecedores={fornecedores}
               centrosCusto={centrosCusto}
+              usuarios={usuarios}
               currentUser={currentUser}
               activeUnidade={activeUnidade}
               onRefresh={loadData}
               isCreateModalOpen={isNovoEmprestimoOpen}
               setIsCreateModalOpen={setIsNovoEmprestimoOpen}
               onVoltar={() => setIsGridView(true)}
+              onNavigate={(tab) => setCurrentTab(tab)}
             />
           )}
 
           {currentTab === 'entradas' && (
             <EntradasView
               produtos={produtos}
+              fornecedores={fornecedores}
               movimentacoes={movimentacoes}
               currentUser={currentUser}
               activeUnidade={activeUnidade}
@@ -387,6 +396,7 @@ export default function App() {
               isCreateModalOpen={isNovaEntradaOpen}
               setIsCreateModalOpen={setIsNovaEntradaOpen}
               onVoltar={() => setIsGridView(true)}
+              onNavigate={(tab) => setCurrentTab(tab)}
             />
           )}
 
@@ -396,15 +406,19 @@ export default function App() {
               currentUser={currentUser}
               onRefresh={loadData}
               onVoltar={() => setIsGridView(true)}
+              onNavigate={(tab) => setCurrentTab(tab)}
             />
           )}
 
           {currentTab === 'movimentacoes' && (
             <MovimentacoesView
               movimentacoes={movimentacoes}
+              produtos={produtos}
+              fornecedores={fornecedores}
               currentUser={currentUser}
               activeUnidade={activeUnidade}
               onRefresh={loadData}
+              onVoltar={() => setIsGridView(true)}
             />
           )}
 
@@ -429,11 +443,12 @@ export default function App() {
             />
           )}
 
-          {currentTab === 'relatorios' && (
+          {(currentTab === 'relatorios' || currentTab === 'dashboard') && (
             <RelatoriosView
               centrosCusto={centrosCusto}
               produtos={produtos}
               movimentacoes={movimentacoes}
+              stats={stats}
               activeUnidade={activeUnidade}
               currentUser={currentUser}
               onVoltar={() => setIsGridView(true)}

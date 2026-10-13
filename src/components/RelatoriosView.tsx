@@ -21,12 +21,14 @@ import autoTable from 'jspdf-autotable';
 import { ConsumoMensalChart } from './ConsumoMensalChart.tsx';
 import { finalizeJsPDF, type PdfGeneratedDocument, type PdfOutputMode } from '../utils/pdfGenerator.ts';
 import { PdfPrintModal } from './PdfPrintModal.tsx';
-import type { CentroCusto, Produto, Movimentacao, EmpresaUnidade, Usuario } from '../types/index.ts';
+import { HelpFloatingModal } from './HelpFloatingModal.tsx';
+import type { CentroCusto, Produto, Movimentacao, EmpresaUnidade, Usuario, DashboardStats } from '../types/index.ts';
 
 interface RelatoriosViewProps {
   centrosCusto: CentroCusto[];
   produtos: Produto[];
   movimentacoes?: Movimentacao[];
+  stats?: DashboardStats | null;
   activeUnidade?: EmpresaUnidade | null;
   currentUser?: Usuario | null;
   onVoltar: () => void;
@@ -53,6 +55,7 @@ export const RelatoriosView: React.FC<RelatoriosViewProps> = ({
   centrosCusto,
   produtos,
   movimentacoes = [],
+  stats = null,
   activeUnidade,
   currentUser,
   onVoltar,
@@ -96,20 +99,32 @@ export const RelatoriosView: React.FC<RelatoriosViewProps> = ({
       cor: 'text-teal-700 bg-teal-100',
       relatorios: [
         {
+          id: 'relatorio_geral_almoxarifado',
+          titulo: '1. Relatório Geral Consolidado do Almoxarifado (Painel Geral Impresso / PDF)',
+          descricao: 'Visão geral completa com indicadores (KPIs), alertas de validade de lotes (30/60/90 dias e vencidos), estoque crítico, empréstimos entre entidades e consumo por setor.',
+          badge: 'Relatório Geral (Dashboard)',
+        },
+        {
           id: 'posicao_atual_estoque',
-          titulo: '1. Posição Atual de Estoque Físico e Financeiro',
+          titulo: '2. Posição Atual de Estoque Físico e Financeiro',
           descricao: 'Demonstrativo completo de produtos ativos, saldo físico, localização de prateleira e valorização contábil.',
           badge: 'Físico / Financeiro',
         },
         {
           id: 'estoque_critico',
-          titulo: '2. Produtos com Estoque Crítico / Abaixo do Mínimo',
+          titulo: '3. Produtos com Estoque Crítico / Abaixo do Mínimo',
           descricao: 'Alerta gerencial de itens com saldo em nível de risco para reposição urgente de compras.',
           badge: 'Ponto de Pedido',
         },
         {
+          id: 'validade_lotes',
+          titulo: '4. Controle de Lotes e Alertas de Validade (30 / 60 / 90 Dias e Vencidos)',
+          descricao: 'Rastreabilidade sanitária por lote com bloqueio automático de lotes vencidos e alertas preventivos.',
+          badge: 'Validade / FEFO',
+        },
+        {
           id: 'consumivel_vs_equipamentos',
-          titulo: '3. Relação de Materiais Consumíveis vs Equipamentos',
+          titulo: '5. Relação de Materiais Consumíveis vs Equipamentos',
           descricao: 'Classificação analítica por tipo de insumo e distribuição patrimonial no almoxarifado.',
           badge: 'Patrimonial',
         },
@@ -122,19 +137,19 @@ export const RelatoriosView: React.FC<RelatoriosViewProps> = ({
       relatorios: [
         {
           id: 'extrato_entradas_nf',
-          titulo: '4. Extrato de Entradas por Fornecedor / Nota Fiscal',
+          titulo: '6. Extrato de Entradas por Fornecedor / Nota Fiscal',
           descricao: 'Recebimentos efetuados com número de documento, número de lote, validade e almoxarife conferente.',
           badge: 'Fiscal / NF',
         },
         {
           id: 'razao_saidas_centro_custo',
-          titulo: '5. Livro Razão de Saídas por Centro de Custo',
+          titulo: '7. Livro Razão de Saídas por Centro de Custo',
           descricao: 'Consumo por departamento assistencial hospitalar com quantidades dispensadas.',
           badge: 'Consumo / Saídas',
         },
         {
           id: 'auditoria_estornos',
-          titulo: '6. Registro de Estornos e Auditoria',
+          titulo: '8. Registro de Estornos e Auditoria',
           descricao: 'Histórico de lançamentos compensatórios com justificativas técnicas exigidas por lei.',
           badge: 'Auditoria Externa',
         },
@@ -147,19 +162,19 @@ export const RelatoriosView: React.FC<RelatoriosViewProps> = ({
       relatorios: [
         {
           id: 'requisicoes_atendidas',
-          titulo: '7. Requisições Atendidas por Período',
+          titulo: '9. Requisições Atendidas por Período',
           descricao: 'Relatório consolidado de pedidos assistenciais deferidos e baixados no estoque.',
           badge: 'Atendimento',
         },
         {
           id: 'requisicoes_rejeitadas',
-          titulo: '8. Requisições Rejeitadas e Motivos',
+          titulo: '10. Requisições Rejeitadas e Motivos',
           descricao: 'Levantamento dos pedidos não autorizados com parecer obrigatório do almoxarife.',
           badge: 'Pareceres',
         },
         {
           id: 'tempo_atendimento',
-          titulo: '9. Indicadores de Atendimento e Eficiência',
+          titulo: '11. Indicadores de Atendimento e Eficiência',
           descricao: 'Estatísticas de produtividade, taxa de eficiência no atendimento e pendências.',
           badge: 'KPIs Hospitalares',
         },
@@ -171,14 +186,20 @@ export const RelatoriosView: React.FC<RelatoriosViewProps> = ({
       cor: 'text-amber-700 bg-amber-100',
       relatorios: [
         {
+          id: 'emprestimos_institucionais_relatorio',
+          titulo: '12. Empréstimos Institucionais entre Entidades / Hospitais Parceiros',
+          descricao: 'Demonstrativo de empréstimos recebidos (dívidas em estoque) e concedidos a terceiros com saldos pendentes.',
+          badge: 'Interinstitucional',
+        },
+        {
           id: 'equipamentos_abertos_atrasados',
-          titulo: '10. Equipamentos em Aberto e Empréstimos Atrasados',
+          titulo: '13. Equipamentos em Aberto e Empréstimos Atrasados',
           descricao: 'Controle de ferramentas e equipamentos cirúrgicos fora do almoxarifado e atrasos.',
           badge: 'Cautela Ativa',
         },
         {
           id: 'historico_devolucoes',
-          titulo: '11. Histórico Geral de Devoluções e Conservação',
+          titulo: '14. Histórico Geral de Devoluções e Conservação',
           descricao: 'Termos de retorno e conferência de integridade física dos equipamentos devolvidos.',
           badge: 'Retornos / Baixas',
         },
@@ -447,9 +468,9 @@ export const RelatoriosView: React.FC<RelatoriosViewProps> = ({
   };
 
   // =========================================================================
-  // 2. EXPORTAÇÃO EXECUTIVA CONSOLIDADA: RESUMO DO INVENTÁRIO & MOVIMENTAÇÕES
+  // 2. RELATÓRIO GERAL DO ALMOXARIFADO (IMPRESSO OU PDF) — ANTIGO DASHBOARD
   // =========================================================================
-  const handleDownloadResumoInventarioMovimentacoesPDF = async () => {
+  const handleGerarRelatorioGeralPDF = async (mode: PdfOutputMode = 'download') => {
     setExportingExecutivePdf(true);
     try {
       const storedUserId = localStorage.getItem('multi_almox_user_id');
@@ -457,11 +478,13 @@ export const RelatoriosView: React.FC<RelatoriosViewProps> = ({
       const authHeader: Record<string, string> = { Authorization: `user:${effectiveUserId}` };
 
       // Busca dados atualizados em tempo real (com fallback seguro para as props)
-      const [prodRes, movRes] = await Promise.all([
+      const [statsRes, prodRes, movRes] = await Promise.all([
+        fetch('/api/dashboard/stats', { headers: authHeader }).catch(() => null),
         fetch('/api/produtos?apenas_ativos=false', { headers: authHeader }).catch(() => null),
         fetch('/api/movimentacoes?limite=250', { headers: authHeader }).catch(() => null),
       ]);
 
+      const dashboardStats: DashboardStats | null = statsRes && statsRes.ok ? await statsRes.json() : stats;
       const listaProdutos: Produto[] = prodRes && prodRes.ok ? await prodRes.json() : produtos;
       const listaMovimentacoes: Movimentacao[] = movRes && movRes.ok ? await movRes.json() : movimentacoes;
 
@@ -472,11 +495,12 @@ export const RelatoriosView: React.FC<RelatoriosViewProps> = ({
         0
       );
 
+      const kpis = dashboardStats?.kpis;
+      const lotesAlerta = dashboardStats?.lotes_alerta_validade || [];
+      const consumoCentros = dashboardStats?.consumo_centros_custo || [];
+
       const totalEntradas = listaMovimentacoes.filter((m) => m.tipo === 'entrada').length;
       const totalSaidas = listaMovimentacoes.filter((m) => m.tipo === 'saida').length;
-      const totalEstornos = listaMovimentacoes.filter(
-        (m) => m.tipo === 'estorno_entrada' || m.tipo === 'estorno_saida'
-      ).length;
 
       const doc = new jsPDF({
         orientation: 'landscape',
@@ -505,12 +529,16 @@ export const RelatoriosView: React.FC<RelatoriosViewProps> = ({
       doc.setFont('helvetica', 'bold');
       doc.setFontSize(14);
       doc.setTextColor(15, 23, 42);
-      doc.text('ALMOXCONTROL — RELATÓRIO EXECUTIVO DE GESTÃO', textStartX, 13);
+      doc.text('ALMOXCONTROL — RELATÓRIO GERAL CONSOLIDADO DO ALMOXARIFADO', textStartX, 13);
 
       doc.setFont('helvetica', 'normal');
       doc.setFontSize(8.5);
       doc.setTextColor(71, 85, 105);
-      doc.text('Resumo Consolidado do Inventário Físico/Financeiro e Histórico de Movimentações', textStartX, 18);
+      doc.text(
+        'Painel Geral de Indicadores (KPIs), Controle de Validade (30/60/90d), Posição de Estoque, Consumo e Movimentações',
+        textStartX,
+        18
+      );
 
       doc.setFont('helvetica', 'bold');
       doc.setFontSize(8);
@@ -531,30 +559,39 @@ export const RelatoriosView: React.FC<RelatoriosViewProps> = ({
       doc.setLineWidth(0.5);
       doc.line(14, 27, pageWidth - 14, 27);
 
-      // Quadro de Indicadores Executivos (4 KPIs)
+      // Quadro de Indicadores Executivos (4 KPIs Consolidados do Painel Geral)
       const boxY = 30;
       const boxWidth = (pageWidth - 28 - 9) / 4;
 
+      const lotesVencidosCount = kpis?.lotes_vencidos ?? 0;
+      const lotes30Count = kpis?.lotes_critico_30d ?? 0;
+      const lotes60Count = kpis?.lotes_alerta_60d ?? 0;
+      const lotes90Count = kpis?.lotes_atencao_90d ?? 0;
+
+      const empInstPendCount = kpis?.emprestimos_institucionais_pendentes ?? 0;
+      const empAtrasadosCount = kpis?.emprestimos_atrasados ?? 0;
+      const reqPendCount = kpis?.requisicoes_pendentes ?? 0;
+
       const kpiCards = [
         {
-          label: 'ITENS ATIVOS NO INVENTÁRIO',
-          value: `${produtosAtivos.length} produto(s)`,
-          sub: `${produtosCriticos.length} em nível crítico/baixo`,
+          label: 'ITENS ATIVOS E PONTO DE REPOSIÇÃO',
+          value: `${produtosAtivos.length} produtos ativos`,
+          sub: `${produtosCriticos.length} item(ns) em estoque crítico/baixo`,
         },
         {
-          label: 'VALOR TOTAL DO INVENTÁRIO',
+          label: 'VALOR CONTÁBIL EM ESTOQUE',
           value: valorTotalInventario.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' }),
-          sub: 'Custo contábil em estoque',
+          sub: `${totalEntradas} Entradas | ${totalSaidas} Saídas registradas`,
         },
         {
-          label: 'MOVIMENTAÇÕES (ENTRADAS / SAÍDAS)',
-          value: `${totalEntradas} Entradas | ${totalSaidas} Saídas`,
-          sub: `${listaMovimentacoes.length} registros auditados`,
+          label: 'VALIDADE DE LOTES (FEFO)',
+          value: `${lotesVencidosCount} Venc. | ${lotes30Count} (30d) | ${lotes60Count} (60d)`,
+          sub: `${lotes90Count} lote(s) em atenção (90 dias)`,
         },
         {
-          label: 'ESTORNOS / AJUSTES AUDITADOS',
-          value: `${totalEstornos} lançamento(s)`,
-          sub: 'Rastreabilidade integral ativa',
+          label: 'REQUISIÇÕES & EMPRÉSTIMOS PARCEIROS',
+          value: `${reqPendCount} Req. Pendente(s)`,
+          sub: `${empInstPendCount} emp. entre entidades | ${empAtrasadosCount} atrasado(s)`,
         },
       ];
 
@@ -570,7 +607,7 @@ export const RelatoriosView: React.FC<RelatoriosViewProps> = ({
         doc.text(kpi.label, x + 3, boxY + 4.5);
 
         doc.setFont('helvetica', 'bold');
-        doc.setFontSize(9.5);
+        doc.setFontSize(9.2);
         doc.setTextColor(0, 35, 125);
         doc.text(kpi.value, x + 3, boxY + 10.2);
 
@@ -580,11 +617,91 @@ export const RelatoriosView: React.FC<RelatoriosViewProps> = ({
         doc.text(kpi.sub, x + 3, boxY + 14.2);
       });
 
-      // SEÇÃO 1: RESUMO DO INVENTÁRIO FÍSICO E FINANCEIRO
+      let currentY = 52;
+
+      // SEÇÃO 1: MONITORAMENTO DE LOTES E ALERTAS DE VALIDADE (30 / 60 / 90 DIAS E VENCIDOS)
       doc.setFont('helvetica', 'bold');
-      doc.setFontSize(10);
+      doc.setFontSize(9.5);
       doc.setTextColor(15, 23, 42);
-      doc.text('1. RESUMO DO INVENTÁRIO DE ESTOQUE (POSIÇÃO ATUAL)', 14, 52);
+      doc.text('1. MONITORAMENTO DE LOTES E ALERTAS DE VALIDADE (VENCIDOS, 30, 60 E 90 DIAS)', 14, currentY);
+
+      const lotesRows = lotesAlerta.map((lt) => {
+        const statusDesc =
+          lt.status_validade === 'vencido'
+            ? 'BLOQUEADO / VENCIDO'
+            : lt.status_validade === 'critico_30d'
+            ? 'CRÍTICO (≤ 30 DIAS)'
+            : lt.status_validade === 'alerta_60d'
+            ? 'ALERTA (≤ 60 DIAS)'
+            : 'ATENÇÃO (≤ 90 DIAS)';
+        const prazoDesc =
+          lt.dias_para_vencer === null || lt.dias_para_vencer === undefined
+            ? '-'
+            : lt.dias_para_vencer < 0
+            ? `Vencido há ${Math.abs(lt.dias_para_vencer)}d`
+            : `${lt.dias_para_vencer} dia(s)`;
+        return [
+          lt.produto_codigo || '-',
+          lt.produto_nome || '-',
+          lt.numero_lote,
+          lt.data_validade ? lt.data_validade.split('-').reverse().join('/') : '-',
+          prazoDesc,
+          `${lt.quantidade_atual} ${lt.unidade_medida || ''}`.trim(),
+          statusDesc,
+        ];
+      });
+
+      autoTable(doc, {
+        startY: currentY + 3,
+        head: [[
+          'Código Único',
+          'Produto / Material',
+          'Nº do Lote',
+          'Data Validade',
+          'Prazo Restante',
+          'Saldo no Lote',
+          'Classificação / Status',
+        ]],
+        body:
+          lotesRows.length > 0
+            ? lotesRows
+            : [['-', 'Nenhum lote vencido ou em faixa de alerta (30/60/90 dias) no momento.', '-', '-', '-', '0', 'REGULAR']],
+        styles: {
+          font: 'helvetica',
+          fontSize: 7.4,
+          cellPadding: 2,
+          textColor: [30, 41, 59],
+          lineColor: [226, 232, 240],
+          lineWidth: 0.1,
+        },
+        headStyles: {
+          fillColor: [180, 83, 9],
+          textColor: [255, 255, 255],
+          fontStyle: 'bold',
+        },
+        alternateRowStyles: {
+          fillColor: [255, 251, 235],
+        },
+        columnStyles: {
+          3: { halign: 'center' },
+          4: { halign: 'center' },
+          5: { halign: 'right', fontStyle: 'bold' },
+          6: { halign: 'center', fontStyle: 'bold' },
+        },
+        margin: { left: 14, right: 14, bottom: 20 },
+      });
+
+      // SEÇÃO 2: RESUMO DO INVENTÁRIO FÍSICO E FINANCEIRO (POSIÇÃO ATUAL E CRÍTICOS)
+      currentY = ((doc as any).lastAutoTable?.finalY || 90) + 8;
+      if (currentY > pageHeight - 45) {
+        doc.addPage();
+        currentY = 18;
+      }
+
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(9.5);
+      doc.setTextColor(15, 23, 42);
+      doc.text('2. POSIÇÃO ATUAL DO INVENTÁRIO DE ESTOQUE (FÍSICO, FINANCEIRO E PONTO DE REPOSIÇÃO)', 14, currentY);
 
       const inventarioRows = produtosAtivos.map((p) => {
         const vUnit = Number(p.valor_unitario ?? 0);
@@ -610,7 +727,7 @@ export const RelatoriosView: React.FC<RelatoriosViewProps> = ({
       });
 
       autoTable(doc, {
-        startY: 55,
+        startY: currentY + 3,
         head: [[
           'Código',
           'Produto / Material',
@@ -628,7 +745,7 @@ export const RelatoriosView: React.FC<RelatoriosViewProps> = ({
             : [['-', 'Nenhum produto cadastrado no inventário.', '-', '-', '0', '0', 'R$ 0,00', 'R$ 0,00', '-']],
         styles: {
           font: 'helvetica',
-          fontSize: 7.5,
+          fontSize: 7.4,
           cellPadding: 2,
           textColor: [30, 41, 59],
           lineColor: [226, 232, 240],
@@ -664,24 +781,72 @@ export const RelatoriosView: React.FC<RelatoriosViewProps> = ({
         margin: { left: 14, right: 14, bottom: 20 },
       });
 
-      // SEÇÃO 2: HISTÓRICO DE MOVIMENTAÇÕES REALIZADAS
-      let nextSectionY = ((doc as any).lastAutoTable?.finalY || 110) + 10;
+      // SEÇÃO 3: CONSUMO CONSOLIDADO POR CENTRO DE CUSTO
+      if (consumoCentros.length > 0) {
+        currentY = ((doc as any).lastAutoTable?.finalY || 120) + 8;
+        if (currentY > pageHeight - 45) {
+          doc.addPage();
+          currentY = 18;
+        }
+
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(9.5);
+        doc.setTextColor(15, 23, 42);
+        doc.text('3. CONSUMO ACUMULADO POR CENTRO DE CUSTO / SETOR HOSPITALAR', 14, currentY);
+
+        const consumoRows = consumoCentros.map((cc) => [
+          cc.codigo,
+          cc.nome,
+          `${cc.total_unidades} unid. dispensadas`,
+        ]);
+
+        autoTable(doc, {
+          startY: currentY + 3,
+          head: [['Código do Setor', 'Centro de Custo / Departamento Assistencial', 'Volume Total Dispensado']],
+          body: consumoRows,
+          styles: {
+            font: 'helvetica',
+            fontSize: 7.4,
+            cellPadding: 2,
+            textColor: [30, 41, 59],
+            lineColor: [226, 232, 240],
+            lineWidth: 0.1,
+          },
+          headStyles: {
+            fillColor: [13, 148, 136],
+            textColor: [255, 255, 255],
+            fontStyle: 'bold',
+          },
+          columnStyles: {
+            2: { halign: 'right', fontStyle: 'bold' },
+          },
+          margin: { left: 14, right: 14, bottom: 20 },
+        });
+      }
+
+      // SEÇÃO 4: HISTÓRICO DE MOVIMENTAÇÕES REALIZADAS
+      let nextSectionY = ((doc as any).lastAutoTable?.finalY || 130) + 8;
       if (nextSectionY > pageHeight - 45) {
         doc.addPage();
         nextSectionY = 18;
       }
 
       doc.setFont('helvetica', 'bold');
-      doc.setFontSize(10);
+      doc.setFontSize(9.5);
       doc.setTextColor(15, 23, 42);
-      doc.text('2. EXTRATO DAS MOVIMENTAÇÕES REALIZADAS (ENTRADAS, SAÍDAS E ESTORNOS)', 14, nextSectionY);
+      doc.text('4. EXTRATO DAS MOVIMENTAÇÕES REALIZADAS (ENTRADAS NF, SAÍDAS, EMPRÉSTIMOS E DESCARTES)', 14, nextSectionY);
 
-      const formatTipoMov = (tipo: string) => {
+      const formatTipoMov = (tipo: string, subtipo?: string | null) => {
+        if (subtipo) return `${tipo.toUpperCase()} (${subtipo})`;
         switch (tipo) {
           case 'entrada':
             return 'ENTRADA (NF)';
+          case 'entrada_diversa':
+            return 'ENTRADA DIVERSA';
           case 'saida':
             return 'SAÍDA / DISP.';
+          case 'saida_diversa':
+            return 'SAÍDA DIVERSA';
           case 'estorno_entrada':
             return 'ESTORNO ENTRADA';
           case 'estorno_saida':
@@ -691,13 +856,15 @@ export const RelatoriosView: React.FC<RelatoriosViewProps> = ({
         }
       };
 
-      const movimentacoesRows = listaMovimentacoes.map((m) => [
+      const movimentacoesRows = listaMovimentacoes.slice(0, 80).map((m) => [
         m.data_movimentacao ? new Date(m.data_movimentacao).toLocaleString('pt-BR') : '-',
-        formatTipoMov(m.tipo),
+        formatTipoMov(m.tipo, (m as any).motivo_movimentacao),
         m.produto_codigo || '-',
         m.produto_nome || '-',
         `${m.quantidade} ${m.unidade_medida || ''}`.trim(),
-        m.centro_custo_nome ? `${m.centro_custo_codigo || ''} - ${m.centro_custo_nome}`.trim() : 'Estoque Central',
+        m.centro_custo_nome
+          ? `${m.centro_custo_codigo || ''} - ${m.centro_custo_nome}`.trim()
+          : m.fornecedor_nome || 'Estoque Central',
         m.documento_referencia || m.numero_lote || '-',
         m.usuario_nome || '-',
       ]);
@@ -710,7 +877,7 @@ export const RelatoriosView: React.FC<RelatoriosViewProps> = ({
           'Código',
           'Material / Insumo',
           'Quantidade',
-          'Centro de Custo / Setor',
+          'Setor / Entidade',
           'Doc. / NF / Lote',
           'Operador Responsável',
         ]],
@@ -765,17 +932,28 @@ export const RelatoriosView: React.FC<RelatoriosViewProps> = ({
         doc.setFontSize(7.5);
         doc.setTextColor(148, 163, 184);
         doc.text(
-          `AlmoxControl — Resumo Executivo de Inventário e Movimentações | Desenvolvido por Bruno Rocha`,
+          `AlmoxControl — Relatório Geral Consolidado do Almoxarifado | Desenvolvido por Bruno Rocha`,
           14,
           pageHeight - 8
         );
         doc.text(`Página ${i} de ${totalPages}`, pageWidth - 14, pageHeight - 8, { align: 'right' });
       }
 
-      doc.save(`Resumo_Inventario_e_Movimentacoes_${new Date().toISOString().slice(0, 10)}.pdf`);
-      showFeedback('success', 'Resumo executivo do inventário e das movimentações exportado em PDF com sucesso.');
+      const filename = `Relatorio_Geral_Almoxarifado_${new Date().toISOString().slice(0, 10)}.pdf`;
+      const generated = finalizeJsPDF(
+        doc,
+        filename,
+        'Relatório Geral Consolidado do Almoxarifado',
+        mode
+      );
+
+      if (mode === 'print') {
+        setPdfPreviewDoc(generated);
+      } else {
+        showFeedback('success', 'Relatório Geral Consolidado do Almoxarifado exportado em PDF com sucesso.');
+      }
     } catch (err: any) {
-      showFeedback('error', 'Falha ao gerar o PDF consolidado: ' + err.message);
+      showFeedback('error', 'Falha ao gerar o Relatório Geral: ' + err.message);
     } finally {
       setExportingExecutivePdf(false);
     }
@@ -809,7 +987,7 @@ export const RelatoriosView: React.FC<RelatoriosViewProps> = ({
         </div>
       )}
       {/* =========================================================================
-          BARRA DE FERRAMENTAS SUPERIOR: Título, Busca, Exportação PDF e VOLTAR
+          BARRA DE FERRAMENTAS SUPERIOR: Título, Busca, Relatório Geral e VOLTAR
          ========================================================================= */}
       <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex flex-col lg:flex-row items-center justify-between gap-4">
         <div className="flex items-center gap-3 w-full lg:w-auto">
@@ -817,16 +995,18 @@ export const RelatoriosView: React.FC<RelatoriosViewProps> = ({
             <FileBarChart className="w-5 h-5" />
           </div>
           <div>
-            <h1 className="text-xl font-bold text-slate-800 tracking-tight">Relatórios Gerenciais</h1>
+            <h1 className="text-xl font-bold text-slate-800 tracking-tight">
+              Relatórios Gerenciais & Relatório Geral (Impresso / PDF)
+            </h1>
             <p className="text-xs text-slate-500">
-              Demonstrativos contábeis, extratos de movimentações e exportação oficial em PDF
+              Painel consolidado de indicadores (antigo Dashboard), validades (30/60/90d), estoque e movimentações para impressão ou PDF
             </p>
           </div>
         </div>
 
-        {/* Busca, Botão de PDF Consolidado e Botão VOLTAR */}
+        {/* Busca, Botões de Impressão / PDF Geral e Botão VOLTAR */}
         <div className="flex flex-wrap items-center gap-2.5 w-full lg:w-auto justify-end">
-          <div className="relative w-full sm:w-60">
+          <div className="relative w-full sm:w-56">
             <input
               type="text"
               value={searchTerm}
@@ -839,18 +1019,50 @@ export const RelatoriosView: React.FC<RelatoriosViewProps> = ({
 
           <button
             type="button"
-            onClick={handleDownloadResumoInventarioMovimentacoesPDF}
+            onClick={() => handleGerarRelatorioGeralPDF('print')}
             disabled={exportingExecutivePdf}
-            title="Baixar PDF completo com o resumo do inventário físico/financeiro e histórico de movimentações"
+            title="Abrir visualização de impressão do Relatório Geral Consolidado do Almoxarifado"
+            className="bg-[#00237D] hover:bg-[#001b61] disabled:opacity-60 text-white font-semibold px-3.5 py-2 rounded text-xs flex items-center gap-1.5 transition-all shadow uppercase tracking-wide cursor-pointer shrink-0"
+          >
+            <Printer className="w-4 h-4 text-[#6EC1E4]" />
+            <span>IMPRIMIR RELATÓRIO GERAL</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => handleGerarRelatorioGeralPDF('download')}
+            disabled={exportingExecutivePdf}
+            title="Baixar PDF do Relatório Geral Consolidado do Almoxarifado"
             className="bg-[#C2363A] hover:bg-[#a62b2f] disabled:opacity-60 text-white font-semibold px-3.5 py-2 rounded text-xs flex items-center gap-1.5 transition-all shadow uppercase tracking-wide cursor-pointer shrink-0"
           >
             <Download className="w-4 h-4" />
             <span>
               {exportingExecutivePdf
-                ? 'GERANDO PDF...'
-                : 'BAIXAR PDF: INVENTÁRIO & MOVIMENTAÇÕES'}
+                ? 'GERANDO...'
+                : 'BAIXAR RELATÓRIO GERAL (PDF)'}
             </span>
           </button>
+
+          <HelpFloatingModal
+            title="Ajuda — Relatórios & Painel Geral Consolidado"
+            subtitle="Emissão do Relatório Geral (Impresso ou PDF) e Demonstrativos Auditáveis"
+            sections={[
+              {
+                title: 'Relatório Geral do Almoxarifado (Impresso ou PDF)',
+                badge: 'Substitui o Dashboard',
+                tone: 'blue',
+                description:
+                  'Reúne todos os indicadores gerenciais do almoxarifado em um documento pronto para impressão ou PDF: KPIs de estoque, Monitoramento de Lotes e Alertas de Validade (Vencidos/Bloqueados, 30, 60 e 90 dias), Itens Críticos, Consumo por Centro de Custo, Empréstimos Pendentes e Histórico de Movimentações.',
+              },
+              {
+                title: 'Relatórios Padrão e Personalizados',
+                badge: '14 Modelos + CSV/PDF',
+                tone: 'teal',
+                description:
+                  'Clique em "Emitir" em qualquer relatório das categorias abaixo para visualizar em tela, imprimir em papel A4 timbrado, baixar em PDF ou exportar para planilha CSV.',
+              },
+            ]}
+          />
 
           <button
             type="button"
@@ -859,50 +1071,6 @@ export const RelatoriosView: React.FC<RelatoriosViewProps> = ({
           >
             <ArrowLeft className="w-4 h-4" />
             <span>VOLTAR</span>
-          </button>
-        </div>
-      </div>
-
-      {/* =========================================================================
-          PAINEL DE EXPORTAÇÃO RÁPIDA EM PDF PARA GESTORES
-         ========================================================================= */}
-      <div className="bg-gradient-to-r from-[#00237D] via-[#102456] to-[#192641] rounded-xl p-5 text-white shadow-sm flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
-        <div className="space-y-1">
-          <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-[#6EC1E4]">
-            <FileText className="w-4 h-4" />
-            <span>Exportação Direta para Gestores e Auditoria</span>
-          </div>
-          <h2 className="text-base font-bold text-white">
-            Resumo Consolidado do Inventário e Movimentações em PDF
-          </h2>
-          <p className="text-xs text-blue-100/80 max-w-2xl">
-            Gera instantaneamente um documento oficial timbrado em PDF contendo os indicadores de estoque, a posição física/financeira completa de todos os itens e o extrato auditado das movimentações realizadas.
-          </p>
-        </div>
-
-        <div className="flex flex-wrap items-center gap-2.5 shrink-0">
-          <button
-            type="button"
-            onClick={() => handleQuickExportPDF('posicao_atual_estoque')}
-            disabled={exportingPdfId === 'posicao_atual_estoque'}
-            className="px-3.5 py-2 rounded-lg bg-white/10 hover:bg-white/20 text-white border border-white/20 text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer"
-          >
-            <Download className="w-3.5 h-3.5 text-[#6EC1E4]" />
-            <span>
-              {exportingPdfId === 'posicao_atual_estoque' ? 'Exportando...' : 'PDF Só Inventário'}
-            </span>
-          </button>
-
-          <button
-            type="button"
-            onClick={handleDownloadResumoInventarioMovimentacoesPDF}
-            disabled={exportingExecutivePdf}
-            className="px-4 py-2 rounded-lg bg-white text-[#00237D] hover:bg-blue-50 font-bold text-xs flex items-center gap-1.5 transition-all shadow-sm cursor-pointer"
-          >
-            <Download className="w-4 h-4 text-[#C2363A]" />
-            <span>
-              {exportingExecutivePdf ? 'Gerando Arquivo PDF...' : 'Baixar Resumo Completo (PDF)'}
-            </span>
           </button>
         </div>
       </div>
@@ -928,7 +1096,7 @@ export const RelatoriosView: React.FC<RelatoriosViewProps> = ({
               : 'border-transparent text-slate-500 hover:text-slate-700 hover:border-slate-300'
           }`}
         >
-          Relatórios Padrão (11 Modelos)
+          Relatórios Padrão (14 Modelos)
         </button>
         <button
           onClick={() => setActiveTab('personalizados')}

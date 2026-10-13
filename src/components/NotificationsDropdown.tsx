@@ -161,22 +161,22 @@ export const NotificationsDropdown: React.FC<NotificationsDropdownProps> = ({
         className={`relative p-2 rounded-lg transition-all cursor-pointer flex items-center justify-center ${
           variant === 'dark'
             ? isOpen
-              ? 'bg-white/20 text-white border border-[#6EC1E4]/50'
-              : 'bg-white/10 hover:bg-white/20 text-white/90 hover:text-white border border-white/15'
+              ? 'bg-white/15 text-white'
+              : 'text-white/75 hover:text-white hover:bg-white/10'
             : isOpen
-            ? 'bg-teal-50 text-[#00237D] border border-teal-200 shadow-2xs'
-            : 'bg-slate-100 hover:bg-slate-200/80 text-slate-700 border border-slate-200/80'
+            ? 'bg-slate-100 text-slate-900'
+            : 'text-slate-500 hover:text-slate-900 hover:bg-slate-100/80'
         }`}
       >
         <Bell className="w-4 h-4" />
 
-        {/* Contador Visual */}
+        {/* Contador Visual Minimalista */}
         {totalActiveCount > 0 && (
           <span
-            className={`absolute -top-1.5 -right-1.5 min-w-[18px] h-[18px] px-1 rounded-full text-[10px] font-bold font-mono tabular-nums flex items-center justify-center text-white shadow-xs ring-2 ${
+            className={`absolute top-1 right-1 min-w-[16px] h-[16px] px-1 rounded-full text-[9px] font-bold font-mono tabular-nums flex items-center justify-center text-white ring-2 ${
               variant === 'dark' ? 'ring-[#0c1a3e]' : 'ring-white'
             } ${
-              hasUrgentReqs || hasZeroStock ? 'bg-[#C2363A]' : 'bg-amber-500 text-slate-950'
+              hasUrgentReqs || hasZeroStock ? 'bg-rose-600' : 'bg-amber-500 text-slate-950'
             }`}
           >
             {totalActiveCount > 99 ? '99+' : totalActiveCount}

@@ -1,6 +1,5 @@
 import { DatabaseSync } from 'node:sqlite';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -55,6 +54,48 @@ CREATE INDEX IF NOT EXISTS idx_usuarios_login ON usuarios (login);
 CREATE INDEX IF NOT EXISTS idx_usuarios_perfil ON usuarios (perfil);
 CREATE INDEX IF NOT EXISTS idx_usuarios_centro_custo ON usuarios (centro_custo_id);
 
+CREATE TABLE IF NOT EXISTS fornecedores (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    codigo TEXT UNIQUE NOT NULL,
+    razao_social TEXT NOT NULL,
+    nome_fantasia TEXT,
+    cnpj TEXT UNIQUE,
+    tipo_entidade TEXT NOT NULL DEFAULT 'fornecedor_comercial' CHECK (tipo_entidade IN ('fornecedor_comercial', 'entidade_parceira')),
+    inscricao_estadual TEXT,
+    telefone TEXT,
+    email TEXT,
+    contato_responsavel TEXT,
+    endereco TEXT,
+    cidade TEXT,
+    uf TEXT,
+    observacoes TEXT,
+    ativo INTEGER NOT NULL DEFAULT 1,
+    criado_em DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_fornecedores_codigo ON fornecedores (codigo);
+CREATE INDEX IF NOT EXISTS idx_fornecedores_cnpj ON fornecedores (cnpj);
+CREATE INDEX IF NOT EXISTS idx_fornecedores_tipo ON fornecedores (tipo_entidade);
+CREATE INDEX IF NOT EXISTS idx_fornecedores_ativo ON fornecedores (ativo);
+
+CREATE TABLE IF NOT EXISTS fornecedores_entidades (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    codigo TEXT UNIQUE NOT NULL,
+    razao_social TEXT NOT NULL,
+    nome_fantasia TEXT,
+    cnpj TEXT UNIQUE,
+    tipo_entidade TEXT NOT NULL DEFAULT 'fornecedor_comercial' CHECK (tipo_entidade IN ('fornecedor_comercial', 'entidade_parceira')),
+    inscricao_estadual TEXT,
+    telefone TEXT,
+    email TEXT,
+    contato_responsavel TEXT,
+    endereco TEXT,
+    cidade TEXT,
+    uf TEXT,
+    observacoes TEXT,
+    ativo INTEGER NOT NULL DEFAULT 1,
+    criado_em DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS produtos (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     codigo TEXT UNIQUE NOT NULL,
@@ -62,6 +103,7 @@ CREATE TABLE IF NOT EXISTS produtos (
     descricao TEXT,
     unidade_medida TEXT NOT NULL,
     tipo TEXT NOT NULL CHECK (tipo IN ('consumivel', 'nao_consumivel')),
+    controla_validade INTEGER NOT NULL DEFAULT 1,
     estoque_minimo REAL NOT NULL DEFAULT 0 CHECK (estoque_minimo >= 0),
     estoque_maximo REAL NOT NULL DEFAULT 0 CHECK (estoque_maximo >= 0),
     quantidade_atual REAL NOT NULL DEFAULT 0 CHECK (quantidade_atual >= 0),
@@ -73,6 +115,37 @@ CREATE TABLE IF NOT EXISTS produtos (
 CREATE INDEX IF NOT EXISTS idx_produtos_codigo ON produtos (codigo);
 CREATE INDEX IF NOT EXISTS idx_produtos_tipo ON produtos (tipo);
 CREATE INDEX IF NOT EXISTS idx_produtos_ativo ON produtos (ativo);
+
+CREATE TABLE IF NOT EXISTS produto_fornecedores (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    produto_id INTEGER NOT NULL REFERENCES produtos(id) ON DELETE CASCADE,
+    fornecedor_id INTEGER NOT NULL REFERENCES fornecedores(id) ON DELETE CASCADE,
+    marca TEXT,
+    nomenclatura_fornecedor TEXT,
+    codigo_referencia_fornecedor TEXT,
+    ultimo_valor_unitario REAL,
+    ultima_compra DATETIME,
+    criado_em DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_prod_forn_produto ON produto_fornecedores (produto_id);
+CREATE INDEX IF NOT EXISTS idx_prod_forn_fornecedor ON produto_fornecedores (fornecedor_id);
+
+CREATE TABLE IF NOT EXISTS lotes_estoque (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    produto_id INTEGER NOT NULL REFERENCES produtos(id) ON DELETE CASCADE,
+    numero_lote TEXT NOT NULL,
+    data_validade DATE,
+    quantidade_inicial REAL NOT NULL DEFAULT 0,
+    quantidade_atual REAL NOT NULL DEFAULT 0 CHECK (quantidade_atual >= 0),
+    fornecedor_id INTEGER REFERENCES fornecedores(id) ON DELETE SET NULL,
+    documento_referencia TEXT,
+    marca TEXT,
+    nomenclatura_fornecedor TEXT,
+    criado_em DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_lotes_produto ON lotes_estoque (produto_id);
+CREATE INDEX IF NOT EXISTS idx_lotes_validade ON lotes_estoque (data_validade);
+CREATE INDEX IF NOT EXISTS idx_lotes_numero ON lotes_estoque (numero_lote);
 
 CREATE TABLE IF NOT EXISTS requisicoes (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -121,7 +194,8 @@ CREATE TABLE IF NOT EXISTS historico_requisicoes (
         'aprovacao_total',
         'aprovacao_parcial',
         'rejeicao_total',
-        'cancelamento'
+        'cancelamento',
+        'alteracao_prioridade'
     )),
     status_anterior TEXT,
     status_novo TEXT,
@@ -139,20 +213,29 @@ CREATE INDEX IF NOT EXISTS idx_hist_req_data ON historico_requisicoes (data_regi
 CREATE TABLE IF NOT EXISTS movimentacoes (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     tipo TEXT NOT NULL CHECK (tipo IN ('entrada', 'saida', 'estorno_entrada', 'estorno_saida')),
+    motivo_diverso TEXT,
     produto_id INTEGER NOT NULL REFERENCES produtos(id),
+    lote_id INTEGER REFERENCES lotes_estoque(id) ON DELETE SET NULL,
     quantidade REAL NOT NULL CHECK (quantidade > 0),
     centro_custo_id INTEGER REFERENCES centros_custo(id),
+    fornecedor_id INTEGER REFERENCES fornecedores(id) ON DELETE SET NULL,
+    emprestimo_institucional_id INTEGER,
     usuario_id INTEGER NOT NULL REFERENCES usuarios(id),
+    responsavel_nome TEXT,
     documento_referencia TEXT,
     numero_lote TEXT,
     data_validade DATE,
     valor_unitario REAL,
+    marca TEXT,
+    nomenclatura_fornecedor TEXT,
     observacao TEXT,
     data_movimentacao DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_movimentacoes_produto ON movimentacoes (produto_id);
+CREATE INDEX IF NOT EXISTS idx_movimentacoes_lote ON movimentacoes (lote_id);
 CREATE INDEX IF NOT EXISTS idx_movimentacoes_tipo ON movimentacoes (tipo);
 CREATE INDEX IF NOT EXISTS idx_movimentacoes_centro_custo ON movimentacoes (centro_custo_id);
+CREATE INDEX IF NOT EXISTS idx_movimentacoes_fornecedor ON movimentacoes (fornecedor_id);
 CREATE INDEX IF NOT EXISTS idx_movimentacoes_data ON movimentacoes (data_movimentacao);
 
 CREATE TABLE IF NOT EXISTS emprestimos (
@@ -175,6 +258,38 @@ CREATE TABLE IF NOT EXISTS emprestimos (
 CREATE INDEX IF NOT EXISTS idx_emprestimos_produto ON emprestimos (produto_id);
 CREATE INDEX IF NOT EXISTS idx_emprestimos_status ON emprestimos (status);
 CREATE INDEX IF NOT EXISTS idx_emprestimos_solicitante ON emprestimos (solicitante_id);
+
+CREATE TABLE IF NOT EXISTS emprestimos_institucionais (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    numero_documento TEXT UNIQUE NOT NULL,
+    tipo TEXT NOT NULL CHECK (tipo IN ('recebido', 'concedido')),
+    entidade_id INTEGER NOT NULL REFERENCES fornecedores(id),
+    entidade_nome TEXT,
+    data_operacao DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    data_prevista_devolucao DATE,
+    data_quitacao DATETIME,
+    status TEXT NOT NULL DEFAULT 'pendente_devolucao' CHECK (status IN ('pendente_devolucao', 'quitado')),
+    responsavel_almoxarifado_id INTEGER NOT NULL REFERENCES usuarios(id),
+    responsavel_almoxarifado_nome TEXT,
+    responsavel_entidade_nome TEXT,
+    observacao TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_emp_inst_entidade ON emprestimos_institucionais (entidade_id);
+CREATE INDEX IF NOT EXISTS idx_emp_inst_status ON emprestimos_institucionais (status);
+CREATE INDEX IF NOT EXISTS idx_emp_inst_tipo ON emprestimos_institucionais (tipo);
+
+CREATE TABLE IF NOT EXISTS itens_emprestimo_institucional (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    emprestimo_id INTEGER NOT NULL REFERENCES emprestimos_institucionais(id) ON DELETE CASCADE,
+    produto_id INTEGER NOT NULL REFERENCES produtos(id),
+    lote_id INTEGER REFERENCES lotes_estoque(id) ON DELETE SET NULL,
+    numero_lote TEXT,
+    data_validade DATE,
+    quantidade REAL NOT NULL CHECK (quantidade > 0),
+    quantidade_devolvida REAL NOT NULL DEFAULT 0 CHECK (quantidade_devolvida >= 0)
+);
+CREATE INDEX IF NOT EXISTS idx_itens_emp_inst_emp ON itens_emprestimo_institucional (emprestimo_id);
+CREATE INDEX IF NOT EXISTS idx_itens_emp_inst_prod ON itens_emprestimo_institucional (produto_id);
 `;
 
 const FALLBACK_SEED_SQL = `
@@ -215,39 +330,31 @@ export function getSeedSql(): string {
 
 function resolveDatabasePath(): string {
   if (process.env.SQLITE_DB_PATH) {
-    return path.resolve(process.env.SQLITE_DB_PATH);
+    const customPath = path.resolve(process.env.SQLITE_DB_PATH);
+    const parentDir = path.dirname(customPath);
+    if (!fs.existsSync(parentDir)) {
+      fs.mkdirSync(parentDir, { recursive: true });
+    }
+    return customPath;
   }
 
-  const isVercel = Boolean(process.env.VERCEL);
   const localDbCandidates = [
     path.resolve(process.cwd(), 'almoxarifado.db'),
     path.resolve(PROJECT_ROOT, 'almoxarifado.db'),
   ];
-  const bundledDbPath = localDbCandidates.find((p) => fs.existsSync(p)) || localDbCandidates[0];
-
-  if (isVercel) {
-    const tmpDbPath = path.join(os.tmpdir(), 'almoxarifado.db');
-    if (!fs.existsSync(tmpDbPath) && fs.existsSync(bundledDbPath)) {
-      try {
-        fs.copyFileSync(bundledDbPath, tmpDbPath);
-      } catch (err) {
-        console.warn('Não foi possível copiar banco inicial para /tmp:', err);
-      }
-    }
-    return tmpDbPath;
-  }
-
-  return bundledDbPath;
+  return localDbCandidates.find((p) => fs.existsSync(p)) || localDbCandidates[0];
 }
 
 export const DB_PATH = resolveDatabasePath();
 
 export const db = new DatabaseSync(DB_PATH);
 
-// Configurações vitais de integridade e desempenho
+// Configurações vitais de integridade e concorrência para servidor dedicado (Ubuntu Server)
 db.exec('PRAGMA foreign_keys = ON;');
 try {
   db.exec('PRAGMA journal_mode = WAL;');
+  db.exec('PRAGMA synchronous = NORMAL;');
+  db.exec('PRAGMA busy_timeout = 5000;');
 } catch {
   // Fallback caso o sistema de arquivos não suporte WAL
 }
@@ -259,24 +366,32 @@ export function initDatabase() {
   const schemaSql = getSchemaSql();
   const seedSql = getSeedSql();
 
-  if (schemaSql) {
-    db.exec(schemaSql);
-  }
-
-  // Verifica se já existem centros de custo ou empresas cadastradas
   try {
     const tableCheck = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='empresas_unidades'").get();
     if (!tableCheck) {
+      // Banco novo: cria schema completo e executa seed inicial
       if (schemaSql) {
         db.exec(schemaSql);
       }
       if (seedSql) {
         db.exec(seedSql);
       }
-      return;
+    } else {
+      // Banco existente: executa migrações primeiro para garantir novas colunas
+      ensureFornecedoresSchema();
+      ensureRequisicaoAuditSchema();
+
+      // Em seguida aplica o schema para criar quaisquer tabelas novas adicionais
+      if (schemaSql) {
+        try {
+          db.exec(schemaSql);
+        } catch (schemaErr) {
+          console.warn('[DB] Algumas regras do schema já existiam ou foram tratadas:', (schemaErr as Error).message);
+        }
+      }
     }
 
-    const countResult = db.prepare('SELECT COUNT(*) as count FROM usuarios').get() as { count: number };
+    const countResult = db.prepare('SELECT COUNT(*) as count FROM usuarios').get() as { count: number } | undefined;
     if (!countResult || countResult.count === 0) {
       if (seedSql) {
         db.exec(seedSql);
@@ -286,11 +401,202 @@ export function initDatabase() {
     console.error('Erro ao verificar dados iniciais:', err);
   }
 
-  // Garante migração de colunas de auditoria de itens e histórico de requisições
+  // Garante que todas as migrações e rotinas de integridade foram consolidadas
+  ensureFornecedoresSchema();
   ensureRequisicaoAuditSchema();
 
   // Atualiza status de empréstimos em atraso automaticamente
   updateOverdueLoans();
+}
+
+/**
+ * Garante as tabelas fornecedores e produto_fornecedores, além das colunas
+ * fornecedor_id, marca e nomenclatura_fornecedor em movimentacoes
+ */
+export function ensureFornecedoresSchema() {
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS fornecedores (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          codigo TEXT UNIQUE NOT NULL,
+          razao_social TEXT NOT NULL,
+          nome_fantasia TEXT,
+          cnpj TEXT UNIQUE,
+          tipo_entidade TEXT NOT NULL DEFAULT 'fornecedor_comercial' CHECK (tipo_entidade IN ('fornecedor_comercial', 'entidade_parceira')),
+          inscricao_estadual TEXT,
+          telefone TEXT,
+          email TEXT,
+          contato_responsavel TEXT,
+          endereco TEXT,
+          cidade TEXT,
+          uf TEXT,
+          observacoes TEXT,
+          ativo INTEGER NOT NULL DEFAULT 1,
+          criado_em DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE INDEX IF NOT EXISTS idx_fornecedores_codigo ON fornecedores (codigo);
+      CREATE INDEX IF NOT EXISTS idx_fornecedores_cnpj ON fornecedores (cnpj);
+      CREATE INDEX IF NOT EXISTS idx_fornecedores_ativo ON fornecedores (ativo);
+
+      CREATE TABLE IF NOT EXISTS fornecedores_entidades (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          codigo TEXT UNIQUE NOT NULL,
+          razao_social TEXT NOT NULL,
+          nome_fantasia TEXT,
+          cnpj TEXT UNIQUE,
+          tipo_entidade TEXT NOT NULL DEFAULT 'fornecedor_comercial' CHECK (tipo_entidade IN ('fornecedor_comercial', 'entidade_parceira')),
+          inscricao_estadual TEXT,
+          telefone TEXT,
+          email TEXT,
+          contato_responsavel TEXT,
+          endereco TEXT,
+          cidade TEXT,
+          uf TEXT,
+          observacoes TEXT,
+          ativo INTEGER NOT NULL DEFAULT 1,
+          criado_em DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE TABLE IF NOT EXISTS produto_fornecedores (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          produto_id INTEGER NOT NULL REFERENCES produtos(id) ON DELETE CASCADE,
+          fornecedor_id INTEGER NOT NULL REFERENCES fornecedores(id) ON DELETE CASCADE,
+          marca TEXT,
+          nomenclatura_fornecedor TEXT,
+          codigo_referencia_fornecedor TEXT,
+          ultimo_valor_unitario REAL,
+          ultima_compra DATETIME,
+          criado_em DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE INDEX IF NOT EXISTS idx_prod_forn_produto ON produto_fornecedores (produto_id);
+      CREATE INDEX IF NOT EXISTS idx_prod_forn_fornecedor ON produto_fornecedores (fornecedor_id);
+
+      CREATE TABLE IF NOT EXISTS lotes_estoque (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          produto_id INTEGER NOT NULL REFERENCES produtos(id) ON DELETE CASCADE,
+          numero_lote TEXT NOT NULL,
+          data_validade DATE,
+          quantidade_inicial REAL NOT NULL DEFAULT 0,
+          quantidade_atual REAL NOT NULL DEFAULT 0 CHECK (quantidade_atual >= 0),
+          fornecedor_id INTEGER REFERENCES fornecedores(id) ON DELETE SET NULL,
+          documento_referencia TEXT,
+          marca TEXT,
+          nomenclatura_fornecedor TEXT,
+          criado_em DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE INDEX IF NOT EXISTS idx_lotes_produto ON lotes_estoque (produto_id);
+      CREATE INDEX IF NOT EXISTS idx_lotes_validade ON lotes_estoque (data_validade);
+      CREATE INDEX IF NOT EXISTS idx_lotes_numero ON lotes_estoque (numero_lote);
+
+      CREATE TABLE IF NOT EXISTS emprestimos_institucionais (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          numero_documento TEXT UNIQUE NOT NULL,
+          tipo TEXT NOT NULL CHECK (tipo IN ('recebido', 'concedido')),
+          entidade_id INTEGER NOT NULL REFERENCES fornecedores(id),
+          entidade_nome TEXT,
+          data_operacao DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          data_prevista_devolucao DATE,
+          data_quitacao DATETIME,
+          status TEXT NOT NULL DEFAULT 'pendente_devolucao' CHECK (status IN ('pendente_devolucao', 'quitado')),
+          responsavel_almoxarifado_id INTEGER NOT NULL REFERENCES usuarios(id),
+          responsavel_almoxarifado_nome TEXT,
+          responsavel_entidade_nome TEXT,
+          observacao TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_emp_inst_entidade ON emprestimos_institucionais (entidade_id);
+      CREATE INDEX IF NOT EXISTS idx_emp_inst_status ON emprestimos_institucionais (status);
+      CREATE INDEX IF NOT EXISTS idx_emp_inst_tipo ON emprestimos_institucionais (tipo);
+
+      CREATE TABLE IF NOT EXISTS itens_emprestimo_institucional (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          emprestimo_id INTEGER NOT NULL REFERENCES emprestimos_institucionais(id) ON DELETE CASCADE,
+          produto_id INTEGER NOT NULL REFERENCES produtos(id),
+          lote_id INTEGER REFERENCES lotes_estoque(id) ON DELETE SET NULL,
+          numero_lote TEXT,
+          data_validade DATE,
+          quantidade REAL NOT NULL CHECK (quantidade > 0),
+          quantidade_devolvida REAL NOT NULL DEFAULT 0 CHECK (quantidade_devolvida >= 0)
+      );
+      CREATE INDEX IF NOT EXISTS idx_itens_emp_inst_emp ON itens_emprestimo_institucional (emprestimo_id);
+      CREATE INDEX IF NOT EXISTS idx_itens_emp_inst_prod ON itens_emprestimo_institucional (produto_id);
+    `);
+
+    const fornCols = db.prepare("PRAGMA table_info('fornecedores')").all() as Array<{ name: string }>;
+    const fornColNames = new Set(fornCols.map((c) => c.name));
+    if (!fornColNames.has('tipo_entidade')) {
+      db.exec("ALTER TABLE fornecedores ADD COLUMN tipo_entidade TEXT NOT NULL DEFAULT 'fornecedor_comercial';");
+    }
+
+    const prodCols = db.prepare("PRAGMA table_info('produtos')").all() as Array<{ name: string }>;
+    const prodColNames = new Set(prodCols.map((c) => c.name));
+    if (!prodColNames.has('controla_validade')) {
+      db.exec('ALTER TABLE produtos ADD COLUMN controla_validade INTEGER NOT NULL DEFAULT 1;');
+    }
+
+    const movCols = db.prepare("PRAGMA table_info('movimentacoes')").all() as Array<{ name: string }>;
+    const movColNames = new Set(movCols.map((c) => c.name));
+
+    if (!movColNames.has('fornecedor_id')) {
+      db.exec('ALTER TABLE movimentacoes ADD COLUMN fornecedor_id INTEGER REFERENCES fornecedores(id) ON DELETE SET NULL;');
+    }
+    if (!movColNames.has('marca')) {
+      db.exec('ALTER TABLE movimentacoes ADD COLUMN marca TEXT;');
+    }
+    if (!movColNames.has('nomenclatura_fornecedor')) {
+      db.exec('ALTER TABLE movimentacoes ADD COLUMN nomenclatura_fornecedor TEXT;');
+    }
+    if (!movColNames.has('motivo_diverso')) {
+      db.exec('ALTER TABLE movimentacoes ADD COLUMN motivo_diverso TEXT;');
+    }
+    if (!movColNames.has('lote_id')) {
+      db.exec('ALTER TABLE movimentacoes ADD COLUMN lote_id INTEGER REFERENCES lotes_estoque(id) ON DELETE SET NULL;');
+    }
+    if (!movColNames.has('responsavel_nome')) {
+      db.exec('ALTER TABLE movimentacoes ADD COLUMN responsavel_nome TEXT;');
+    }
+    if (!movColNames.has('emprestimo_institucional_id')) {
+      db.exec('ALTER TABLE movimentacoes ADD COLUMN emprestimo_institucional_id INTEGER;');
+    }
+
+    // Backfill lotes_estoque para produtos existentes com saldo > 0 que ainda não possuam lotes registrados
+    const prodsSemLote = db.prepare(`
+      SELECT p.id, p.quantidade_atual
+      FROM produtos p
+      WHERE p.quantidade_atual > 0
+        AND NOT EXISTS (SELECT 1 FROM lotes_estoque le WHERE le.produto_id = p.id)
+    `).all() as Array<{ id: number; quantidade_atual: number }>;
+
+    if (prodsSemLote.length > 0) {
+      const insertLote = db.prepare(`
+        INSERT INTO lotes_estoque (
+          produto_id, numero_lote, data_validade, quantidade_inicial, quantidade_atual,
+          fornecedor_id, documento_referencia, marca, nomenclatura_fornecedor
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+      for (const pr of prodsSemLote) {
+        const lastMov = db.prepare(`
+          SELECT numero_lote, data_validade, fornecedor_id, documento_referencia, marca, nomenclatura_fornecedor
+          FROM movimentacoes
+          WHERE produto_id = ? AND tipo = 'entrada'
+          ORDER BY id DESC LIMIT 1
+        `).get(pr.id) as any;
+
+        insertLote.run(
+          pr.id,
+          lastMov?.numero_lote || `LT-INI-${String(pr.id).padStart(3, '0')}`,
+          lastMov?.data_validade || '2027-12-31',
+          pr.quantidade_atual,
+          pr.quantidade_atual,
+          lastMov?.fornecedor_id || null,
+          lastMov?.documento_referencia || 'SALDO-INICIAL',
+          lastMov?.marca || null,
+          lastMov?.nomenclatura_fornecedor || null
+        );
+      }
+    }
+  } catch (err) {
+    console.error('Erro ao garantir schema de fornecedores, lotes e empréstimos:', err);
+  }
 }
 
 /**
@@ -315,8 +621,52 @@ export function ensureRequisicaoAuditSchema() {
     if (!colNames.has('motivo_decisao')) {
       db.exec('ALTER TABLE itens_requisicao ADD COLUMN motivo_decisao TEXT;');
     }
+    try {
+      db.exec('CREATE INDEX IF NOT EXISTS idx_itens_requisicao_status ON itens_requisicao (status_item);');
+    } catch {
+      // Índice já existente ou não necessário
+    }
 
-    // 2. Garante a tabela historico_requisicoes
+    // 2. Garante a tabela historico_requisicoes (com suporte a alteracao_prioridade)
+    const histTableMeta = db
+      .prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='historico_requisicoes'")
+      .get() as { sql?: string } | undefined;
+
+    if (histTableMeta?.sql && !histTableMeta.sql.includes('alteracao_prioridade')) {
+      db.exec('PRAGMA foreign_keys = OFF;');
+      db.exec(`
+        ALTER TABLE historico_requisicoes RENAME TO historico_requisicoes_old;
+        CREATE TABLE historico_requisicoes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            requisicao_id INTEGER NOT NULL REFERENCES requisicoes(id) ON DELETE CASCADE,
+            item_requisicao_id INTEGER REFERENCES itens_requisicao(id) ON DELETE SET NULL,
+            produto_id INTEGER REFERENCES produtos(id) ON DELETE SET NULL,
+            usuario_id INTEGER NOT NULL REFERENCES usuarios(id),
+            acao TEXT NOT NULL CHECK (acao IN (
+                'criacao_requisicao',
+                'inclusao_item',
+                'aprovacao_item',
+                'negacao_item',
+                'aprovacao_total',
+                'aprovacao_parcial',
+                'rejeicao_total',
+                'cancelamento',
+                'alteracao_prioridade'
+            )),
+            status_anterior TEXT,
+            status_novo TEXT,
+            quantidade_solicitada REAL,
+            quantidade_atendida REAL,
+            detalhes TEXT NOT NULL,
+            justificativa TEXT,
+            data_registro DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        INSERT INTO historico_requisicoes SELECT * FROM historico_requisicoes_old;
+        DROP TABLE historico_requisicoes_old;
+      `);
+      db.exec('PRAGMA foreign_keys = ON;');
+    }
+
     db.exec(`
       CREATE TABLE IF NOT EXISTS historico_requisicoes (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -332,7 +682,8 @@ export function ensureRequisicaoAuditSchema() {
               'aprovacao_total',
               'aprovacao_parcial',
               'rejeicao_total',
-              'cancelamento'
+              'cancelamento',
+              'alteracao_prioridade'
           )),
           status_anterior TEXT,
           status_novo TEXT,
@@ -558,12 +909,18 @@ export function resetDatabase() {
     // Desativa temporariamente chaves para limpar tabelas
     db.exec('PRAGMA foreign_keys = OFF;');
     db.exec(`
+      DROP TABLE IF EXISTS itens_emprestimo_institucional;
+      DROP TABLE IF EXISTS emprestimos_institucionais;
       DROP TABLE IF EXISTS emprestimos;
       DROP TABLE IF EXISTS movimentacoes;
+      DROP TABLE IF EXISTS lotes_estoque;
       DROP TABLE IF EXISTS historico_requisicoes;
       DROP TABLE IF EXISTS itens_requisicao;
       DROP TABLE IF EXISTS requisicoes;
+      DROP TABLE IF EXISTS produto_fornecedores;
       DROP TABLE IF EXISTS produtos;
+      DROP TABLE IF EXISTS fornecedores_entidades;
+      DROP TABLE IF EXISTS fornecedores;
       DROP TABLE IF EXISTS usuarios;
       DROP TABLE IF EXISTS centros_custo;
       DROP TABLE IF EXISTS empresas_unidades;
@@ -578,7 +935,7 @@ export function resetDatabase() {
     }
 
     try {
-      db.exec("DELETE FROM sqlite_sequence WHERE name IN ('centros_custo', 'produtos', 'requisicoes', 'itens_requisicao', 'historico_requisicoes', 'movimentacoes', 'emprestimos');");
+      db.exec("DELETE FROM sqlite_sequence WHERE name IN ('centros_custo', 'fornecedores', 'fornecedores_entidades', 'produtos', 'produto_fornecedores', 'lotes_estoque', 'requisicoes', 'itens_requisicao', 'historico_requisicoes', 'movimentacoes', 'emprestimos', 'emprestimos_institucionais', 'itens_emprestimo_institucional');");
     } catch {
       // Ignora se sqlite_sequence ainda não existir
     }

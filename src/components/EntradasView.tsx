@@ -15,19 +15,24 @@ import {
   Calendar,
   DollarSign,
   Printer,
-  Download
+  Download,
+  Truck,
+  Package,
+  Tag
 } from 'lucide-react';
-import type { Produto, Usuario, Movimentacao, EmpresaUnidade } from '../types/index.ts';
+import type { Produto, Fornecedor, Usuario, Movimentacao, EmpresaUnidade } from '../types/index.ts';
 import {
   generateComprovanteMovimentacaoPDF,
   generateRelatorioMovimentacoesTelaPDF,
   type PdfGeneratedDocument,
 } from '../utils/pdfGenerator.ts';
 import { PdfPrintModal } from './PdfPrintModal.tsx';
+import { HelpFloatingModal } from './HelpFloatingModal.tsx';
 import { useToast } from '../context/ToastContext.tsx';
 
 interface EntradasViewProps {
   produtos: Produto[];
+  fornecedores?: Fornecedor[];
   movimentacoes: Movimentacao[];
   currentUser: Usuario | null;
   activeUnidade?: EmpresaUnidade | null;
@@ -35,10 +40,12 @@ interface EntradasViewProps {
   isCreateModalOpen?: boolean;
   setIsCreateModalOpen?: (open: boolean) => void;
   onVoltar?: () => void;
+  onNavigate?: (tab: string) => void;
 }
 
 export const EntradasView: React.FC<EntradasViewProps> = ({
   produtos,
+  fornecedores = [],
   movimentacoes,
   currentUser,
   activeUnidade,
@@ -46,6 +53,7 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
   isCreateModalOpen = false,
   setIsCreateModalOpen,
   onVoltar,
+  onNavigate,
 }) => {
   // Filtros de busca
   const [filtroDoc, setFiltroDoc] = useState('');
@@ -56,9 +64,13 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
   const [activeFormTab, setActiveFormTab] = useState<'nf' | 'itens'>('nf');
 
   // Campos do Formulário
-  const [formFornecedor, setFormFornecedor] = useState('Distribuidora Hospitalar MedFarma');
+  const [formFornecedorId, setFormFornecedorId] = useState<number>(fornecedores[0]?.id || 0);
+  const [formFornecedor, setFormFornecedor] = useState('');
   const [formDocumento, setFormDocumento] = useState(`NF-${Math.floor(10000 + Math.random() * 90000)}`);
+  const [buscaCatalogo, setBuscaCatalogo] = useState('');
   const [formProdutoId, setFormProdutoId] = useState<number>(produtos[0]?.id || 0);
+  const [formMarca, setFormMarca] = useState('');
+  const [formNomenclaturaFornecedor, setFormNomenclaturaFornecedor] = useState('');
   const [formQuantidade, setFormQuantidade] = useState<number>(100);
   const [formNumeroLote, setFormNumeroLote] = useState('LT-2026A');
   const [formDataValidade, setFormDataValidade] = useState('2027-12-31');
@@ -95,15 +107,57 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
     return filteredEntradas.slice(start, start + pageSize);
   }, [filteredEntradas, currentPage, pageSize]);
 
+  const fornecedoresAtivos = useMemo(() => fornecedores.filter((f) => f.ativo === 1), [fornecedores]);
+  const produtosFiltradosCatalogo = useMemo(() => {
+    const q = buscaCatalogo.trim().toLowerCase();
+    if (!q) return produtos;
+    return produtos.filter(
+      (p) =>
+        p.codigo.toLowerCase().includes(q) ||
+        p.nome.toLowerCase().includes(q) ||
+        (p.fornecedores_vinculados || []).some(
+          (vf) =>
+            (vf.marca || '').toLowerCase().includes(q) ||
+            (vf.nomenclatura_fornecedor || '').toLowerCase().includes(q)
+        )
+    );
+  }, [produtos, buscaCatalogo]);
+  const produtoSelecionado = useMemo(() => produtos.find((p) => p.id === formProdutoId) || null, [produtos, formProdutoId]);
+  const exigeLoteValidade = useMemo(() => {
+    if (!produtoSelecionado) return true;
+    return produtoSelecionado.controla_validade === undefined
+      ? produtoSelecionado.tipo === 'consumivel'
+      : produtoSelecionado.controla_validade === 1;
+  }, [produtoSelecionado]);
+
+  // Preenche sugestão de marca e nomenclatura se o produto já tiver histórico com este fornecedor
+  const handleSelectProdutoOrFornecedor = (nextProdId: number, nextFornId: number) => {
+    const prod = produtos.find((p) => p.id === nextProdId);
+    if (prod?.fornecedores_vinculados && nextFornId) {
+      const vinc = prod.fornecedores_vinculados.find((vf) => vf.fornecedor_id === nextFornId);
+      if (vinc) {
+        if (vinc.marca) setFormMarca(vinc.marca);
+        if (vinc.nomenclatura_fornecedor) setFormNomenclaturaFornecedor(vinc.nomenclatura_fornecedor);
+        if (vinc.ultimo_valor_unitario) setFormValorUnitario(Number(vinc.ultimo_valor_unitario));
+      }
+    }
+  };
+
   const handleAbrirCriacao = () => {
-    setFormFornecedor('Distribuidora Hospitalar MedFarma');
+    const defaultFornId = fornecedoresAtivos[0]?.id || 0;
+    const defaultProdId = produtos[0]?.id || 0;
+    setFormFornecedorId(defaultFornId);
+    setFormFornecedor('');
     setFormDocumento(`NF-${Math.floor(10000 + Math.random() * 90000)}`);
-    setFormProdutoId(produtos[0]?.id || 0);
+    setFormProdutoId(defaultProdId);
+    setFormMarca('');
+    setFormNomenclaturaFornecedor('');
     setFormQuantidade(50);
     setFormNumeroLote(`LT-${Math.floor(1000 + Math.random() * 9000)}`);
     setFormDataValidade('2027-12-31');
     setFormValorUnitario(15.0);
     setFormObservacao('Recebimento de compra e conferência física');
+    handleSelectProdutoOrFornecedor(defaultProdId, defaultFornId);
     setActiveFormTab('nf');
     setErrorMsg(null);
     setIsFormOpen(true);
@@ -113,9 +167,25 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
   const handleSalvarEntrada = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!formProdutoId || formQuantidade <= 0 || !formDocumento.trim()) {
-      const msg = 'Produto, quantidade válida e número de NF são obrigatórios.';
+      const msg = 'Produto cadastrado, quantidade válida e número de NF são obrigatórios.';
       setErrorMsg(msg);
       toast.error('Campos Obrigatórios', msg);
+      return;
+    }
+
+    if (!formFornecedorId && !formFornecedor.trim()) {
+      const msg = 'Selecione um Fornecedor/Entidade cadastrado (Etapa 1) para registrar a Nota Fiscal.';
+      setErrorMsg(msg);
+      toast.error('Fornecedor Obrigatório', msg);
+      setActiveFormTab('nf');
+      return;
+    }
+
+    if (exigeLoteValidade && (!formNumeroLote.trim() || !formDataValidade.trim())) {
+      const msg = `O item "${produtoSelecionado?.codigo} - ${produtoSelecionado?.nome}" exige informação obrigatória de Lote e Data de Validade.`;
+      setErrorMsg(msg);
+      toast.error('Lote e Validade Obrigatórios', msg);
+      setActiveFormTab('itens');
       return;
     }
 
@@ -123,6 +193,7 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
     setErrorMsg(null);
 
     try {
+      const fornObj = fornecedores.find((f) => f.id === formFornecedorId);
       const res = await fetch('/api/entradas', {
         method: 'POST',
         headers: {
@@ -133,7 +204,10 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
           produto_id: formProdutoId,
           quantidade: formQuantidade,
           documento_referencia: formDocumento.trim().toUpperCase(),
-          fornecedor: formFornecedor ? formFornecedor.trim() : null,
+          fornecedor_id: formFornecedorId || null,
+          fornecedor: fornObj ? fornObj.razao_social : formFornecedor ? formFornecedor.trim() : null,
+          marca: formMarca ? formMarca.trim() : null,
+          nomenclatura_fornecedor: formNomenclaturaFornecedor ? formNomenclaturaFornecedor.trim() : null,
           numero_lote: formNumeroLote ? formNumeroLote.trim() : null,
           data_validade: formDataValidade || null,
           valor_unitario: Number(formValorUnitario) || 0,
@@ -146,10 +220,10 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
         throw new Error(data.error || 'Erro ao registrar entrada de estoque.');
       }
 
-      const prodNome = produtos.find((p) => p.id === formProdutoId)?.nome || 'Produto';
+      const prodSel = produtos.find((p) => p.id === formProdutoId);
       toast.success(
-        'Entrada de Estoque Registrada',
-        `Documento ${formDocumento.trim().toUpperCase()}: +${formQuantidade} un. de "${prodNome}" adicionadas ao saldo.`
+        'Entrada de Estoque Registrada no Código Único',
+        `NF ${formDocumento.trim().toUpperCase()}: +${formQuantidade} un. somadas ao código único "${prodSel?.codigo || ''} - ${prodSel?.nome || 'Produto'}".`
       );
 
       setIsFormOpen(false);
@@ -166,30 +240,55 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
 
   return (
     <div className="space-y-6">
-      {/* Cabeçalho */}
-      <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex flex-col md:flex-row items-center justify-between gap-4">
+      {/* Cabeçalho Compacto */}
+      <div className="bg-white px-4 py-3 rounded-xl border border-slate-200 shadow-sm flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-3">
-          <div className="p-2.5 bg-teal-100 text-teal-800 rounded-lg">
+          <div className="p-2 bg-teal-100 text-teal-800 rounded-lg">
             <PackagePlus className="w-5 h-5" />
           </div>
           <div>
-            <h1 className="text-xl font-bold text-slate-800 tracking-tight">Entrada de Estoque por Nota Fiscal</h1>
+            <h1 className="text-lg font-bold text-slate-800 tracking-tight">Entrada de Estoque por Nota Fiscal</h1>
             <p className="text-xs text-slate-500">
-              Recebimento de mercadorias, conferência de lotes, validades e alimentação de saldo
+              Recebimento de documentos fiscais com lote, validade e vínculo ao Código Único de Estoque
             </p>
           </div>
         </div>
 
-        {onVoltar && (
-          <button
-            type="button"
-            onClick={onVoltar}
-            className="bg-teal-600 hover:bg-teal-700 text-white font-medium px-4 py-2 rounded text-xs flex items-center gap-1.5 transition-all shadow uppercase tracking-wide cursor-pointer"
-          >
-            <ArrowLeft className="w-4 h-4" />
-            <span>VOLTAR AO PAINEL</span>
-          </button>
-        )}
+        <div className="flex items-center gap-2">
+          <HelpFloatingModal
+            title="Ajuda & Regras — Entrada de Estoque por Nota Fiscal"
+            subtitle="Passo 3 do Recebimento • Código Único, Lotes e Controle de Validade"
+            currentStep={3}
+            onNavigate={onNavigate}
+            sections={[
+              {
+                title: 'Mesmo Código no Estoque (Multifornecedor)',
+                badge: 'Saldo Unificado',
+                tone: 'teal',
+                description:
+                  'Na tela de entrada por nota: 1) Selecione o Fornecedor/Entidade; 2) Informe o Número da Nota/Documento; 3) Busque pelo Código Interno ou Descrição Padronizada; 4) Registre opcionalmente o "Nome/Marca na NF" para histórico, somando o saldo unicamente no produto cadastrado.',
+              },
+              {
+                title: 'Lote e Data de Validade Obrigatórios',
+                badge: 'Rastreabilidade',
+                tone: 'amber',
+                description:
+                  'Para itens médicos, hospitalares e perecíveis, o preenchimento do Número do Lote e da Data de Validade é obrigatório no momento da entrada, alimentando os alertas automáticos de 90, 60 e 30 dias.',
+              },
+            ]}
+          />
+
+          {onVoltar && (
+            <button
+              type="button"
+              onClick={onVoltar}
+              className="bg-teal-600 hover:bg-teal-700 text-white font-medium px-4 py-2 rounded text-xs flex items-center gap-1.5 transition-all shadow uppercase tracking-wide cursor-pointer"
+            >
+              <ArrowLeft className="w-4 h-4" />
+              <span>VOLTAR AO PAINEL</span>
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Formulário em Abas */}
@@ -198,9 +297,9 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
           <div className="px-6 py-4 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
             <div>
               <span className="text-[10px] font-bold uppercase tracking-wider bg-teal-100 text-teal-800 px-2 py-0.5 rounded">
-                Recebimento Físico & Fiscal
+                Recebimento Físico & Fiscal • Código Único de Estoque
               </span>
-              <h2 className="text-base font-bold text-slate-800 mt-1">Registrar Entrada por Documento / NF</h2>
+              <h2 className="text-base font-bold text-slate-800 mt-1">Registrar Entrada de Estoque por Nota Fiscal</h2>
             </div>
 
             <button
@@ -233,7 +332,7 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
                   : 'border-transparent text-slate-500 hover:text-slate-700'
               }`}
             >
-              1. Documento Fiscal & Fornecedor
+              1. Documento Fiscal & Fornecedor Cadastrado
             </button>
 
             <button
@@ -245,7 +344,7 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
                   : 'border-transparent text-slate-500 hover:text-slate-700'
               }`}
             >
-              2. Insumo, Lote & Valores
+              2. Produto (Código Único), Marca, Nomenclatura & Lote
             </button>
           </div>
 
@@ -267,16 +366,55 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
                 </div>
 
                 <div>
-                  <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wider mb-1">
-                    Fornecedor / Razão Social
-                  </label>
-                  <input
-                    type="text"
-                    value={formFornecedor}
-                    onChange={(e) => setFormFornecedor(e.target.value)}
-                    className="w-full px-3 py-2 bg-[#f1f3f5] border border-slate-300 rounded text-xs text-slate-800 focus:bg-white focus:border-teal-500 shadow-inner"
-                    placeholder="Nome da distribuidora ou laboratório"
-                  />
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wider">
+                      Fornecedor Cadastrado (Etapa 1) *
+                    </label>
+                    {onNavigate && (
+                      <button
+                        type="button"
+                        onClick={() => onNavigate('fornecedores')}
+                        className="text-[10px] font-bold text-teal-700 hover:underline flex items-center gap-0.5 cursor-pointer"
+                      >
+                        <Plus className="w-3 h-3" />
+                        <span>Cadastrar Fornecedor</span>
+                      </button>
+                    )}
+                  </div>
+                  {fornecedoresAtivos.length > 0 ? (
+                    <select
+                      value={formFornecedorId}
+                      onChange={(e) => {
+                        const nextId = Number(e.target.value);
+                        setFormFornecedorId(nextId);
+                        handleSelectProdutoOrFornecedor(formProdutoId, nextId);
+                      }}
+                      className="w-full px-3 py-2 bg-[#f1f3f5] border border-slate-300 rounded text-xs text-slate-800 focus:bg-white focus:border-teal-500 shadow-inner cursor-pointer"
+                      required
+                    >
+                      <option value={0}>Selecione o fornecedor da Nota Fiscal...</option>
+                      {fornecedoresAtivos.map((f) => (
+                        <option key={f.id} value={f.id}>
+                          {f.codigo} - {f.razao_social}
+                          {f.nome_fantasia ? ` (${f.nome_fantasia})` : ''}
+                          {f.cnpj ? ` | CNPJ: ${f.cnpj}` : ''}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <div className="space-y-2">
+                      <input
+                        type="text"
+                        value={formFornecedor}
+                        onChange={(e) => setFormFornecedor(e.target.value)}
+                        className="w-full px-3 py-2 bg-[#f1f3f5] border border-slate-300 rounded text-xs text-slate-800 focus:bg-white focus:border-teal-500 shadow-inner"
+                        placeholder="Informe o fornecedor ou cadastre no módulo Fornecedores..."
+                      />
+                      <p className="text-[10px] text-amber-700 font-medium">
+                        Dica: Cadastre seus fornecedores no módulo &ldquo;1. Cadastro de Fornecedor&rdquo; para selecioná-los na lista homologada.
+                      </p>
+                    </div>
+                  )}
                 </div>
 
                 <div className="md:col-span-2">
@@ -295,76 +433,152 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
             )}
 
             {activeFormTab === 'itens' && (
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                <div className="md:col-span-2">
-                  <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wider mb-1">
-                    Produto / Insumo *
-                  </label>
-                  <select
-                    value={formProdutoId}
-                    onChange={(e) => setFormProdutoId(Number(e.target.value))}
-                    className="w-full px-3 py-2 bg-[#f1f3f5] border border-slate-300 rounded text-xs text-slate-800 focus:bg-white focus:border-teal-500 shadow-inner cursor-pointer"
-                    required
-                  >
-                    {produtos.map((p) => (
-                      <option key={p.id} value={p.id}>
-                        {p.codigo} - {p.nome} ({p.unidade_medida}) | Saldo Atual: {p.quantidade_atual}
-                      </option>
-                    ))}
-                  </select>
-                </div>
+              <div className="space-y-4">
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  <div className="md:col-span-3">
+                    <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wider mb-1">
+                      Buscar Produto por Código Interno ou Descrição Padronizada
+                    </label>
+                    <div className="relative">
+                      <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-2.5" />
+                      <input
+                        type="text"
+                        value={buscaCatalogo}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          setBuscaCatalogo(val);
+                          const q = val.trim().toLowerCase();
+                          if (q) {
+                            const match = produtos.find(
+                              (p) => p.codigo.toLowerCase().includes(q) || p.nome.toLowerCase().includes(q)
+                            );
+                            if (match) {
+                              setFormProdutoId(match.id);
+                              handleSelectProdutoOrFornecedor(match.id, formFornecedorId);
+                            }
+                          }
+                        }}
+                        placeholder="Digite o Código Único (ex: MAT-001) ou Descrição Padrão (ex: Papel A4, Seringa)..."
+                        className="w-full pl-8 pr-3 py-2 bg-[#f1f3f5] border border-slate-300 rounded text-xs text-slate-800 focus:bg-white focus:border-teal-500 shadow-inner"
+                      />
+                    </div>
+                  </div>
 
-                <div>
-                  <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wider mb-1">
-                    Quantidade Entrando *
-                  </label>
-                  <input
-                    type="number"
-                    min="1"
-                    value={formQuantidade}
-                    onChange={(e) => setFormQuantidade(Math.max(1, Number(e.target.value)))}
-                    className="w-full px-3 py-2 bg-[#f1f3f5] border border-slate-300 rounded text-xs text-slate-800 font-mono focus:bg-white focus:border-teal-500 shadow-inner"
-                    required
-                  />
-                </div>
+                  <div className="md:col-span-2">
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wider">
+                        Produto Cadastrado no Estoque (Código Único Interno) *
+                      </label>
+                      {onNavigate && (
+                        <button
+                          type="button"
+                          onClick={() => onNavigate('produtos')}
+                          className="text-[10px] font-bold text-teal-700 hover:underline flex items-center gap-0.5 cursor-pointer"
+                        >
+                          <Plus className="w-3 h-3" />
+                          <span>Cadastrar Produto</span>
+                        </button>
+                      )}
+                    </div>
+                    <select
+                      value={formProdutoId}
+                      onChange={(e) => {
+                        const nextProdId = Number(e.target.value);
+                        setFormProdutoId(nextProdId);
+                        handleSelectProdutoOrFornecedor(nextProdId, formFornecedorId);
+                      }}
+                      className="w-full px-3 py-2 bg-[#f1f3f5] border border-slate-300 rounded text-xs text-slate-800 focus:bg-white focus:border-teal-500 shadow-inner cursor-pointer"
+                      required
+                    >
+                      <option value={0}>Selecione o produto do catálogo...</option>
+                      {produtosFiltradosCatalogo.map((p) => (
+                        <option key={p.id} value={p.id}>
+                          [CÓD: {p.codigo}] {p.nome} ({p.unidade_medida}) | Saldo Atual: {p.quantidade_atual}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
 
-                <div>
-                  <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wider mb-1">
-                    Número do Lote
-                  </label>
-                  <input
-                    type="text"
-                    value={formNumeroLote}
-                    onChange={(e) => setFormNumeroLote(e.target.value)}
-                    className="w-full px-3 py-2 bg-[#f1f3f5] border border-slate-300 rounded text-xs text-slate-800 font-mono focus:bg-white focus:border-teal-500 shadow-inner"
-                    placeholder="ex: LT-9982"
-                  />
-                </div>
+                  <div>
+                    <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wider mb-1">
+                      Quantidade Entrando *
+                    </label>
+                    <input
+                      type="number"
+                      min="1"
+                      value={formQuantidade}
+                      onChange={(e) => setFormQuantidade(Math.max(1, Number(e.target.value)))}
+                      className="w-full px-3 py-2 bg-[#f1f3f5] border border-slate-300 rounded text-xs text-slate-800 font-mono focus:bg-white focus:border-teal-500 shadow-inner"
+                      required
+                    />
+                  </div>
 
-                <div>
-                  <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wider mb-1">
-                    Data de Validade
-                  </label>
-                  <input
-                    type="date"
-                    value={formDataValidade}
-                    onChange={(e) => setFormDataValidade(e.target.value)}
-                    className="w-full px-3 py-2 bg-[#f1f3f5] border border-slate-300 rounded text-xs text-slate-800 focus:bg-white focus:border-teal-500 shadow-inner"
-                  />
-                </div>
+                  <div>
+                    <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wider mb-1">
+                      Nome / Marca na NF (Opcional p/ Histórico)
+                    </label>
+                    <input
+                      type="text"
+                      value={formMarca}
+                      onChange={(e) => setFormMarca(e.target.value)}
+                      className="w-full px-3 py-2 bg-[#f1f3f5] border border-slate-300 rounded text-xs text-slate-800 focus:bg-white focus:border-teal-500 shadow-inner"
+                      placeholder="ex: Chamex, Report, BD, Descarpack..."
+                    />
+                  </div>
 
-                <div>
-                  <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wider mb-1">
-                    Valor Unitário na NF (R$)
-                  </label>
-                  <input
-                    type="number"
-                    step="0.01"
-                    min="0"
-                    value={formValorUnitario}
-                    onChange={(e) => setFormValorUnitario(Number(e.target.value))}
-                    className="w-full px-3 py-2 bg-[#f1f3f5] border border-slate-300 rounded text-xs text-slate-800 font-mono focus:bg-white focus:border-teal-500 shadow-inner"
-                  />
+                  <div className="md:col-span-2">
+                    <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wider mb-1">
+                      Nomenclatura Comercial na NF do Fornecedor (Opcional)
+                    </label>
+                    <input
+                      type="text"
+                      value={formNomenclaturaFornecedor}
+                      onChange={(e) => setFormNomenclaturaFornecedor(e.target.value)}
+                      className="w-full px-3 py-2 bg-[#f1f3f5] border border-slate-300 rounded text-xs text-slate-800 focus:bg-white focus:border-teal-500 shadow-inner"
+                      placeholder="Como o fornecedor descreveu o item na NF (o saldo soma unicamente no código interno)..."
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wider mb-1">
+                      Número do Lote {exigeLoteValidade ? '*' : '(Opcional)'}
+                    </label>
+                    <input
+                      type="text"
+                      value={formNumeroLote}
+                      onChange={(e) => setFormNumeroLote(e.target.value)}
+                      className="w-full px-3 py-2 bg-[#f1f3f5] border border-slate-300 rounded text-xs text-slate-800 font-mono focus:bg-white focus:border-teal-500 shadow-inner"
+                      placeholder="ex: LT-9982"
+                      required={exigeLoteValidade}
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wider mb-1">
+                      Data de Validade {exigeLoteValidade ? '*' : '(Opcional)'}
+                    </label>
+                    <input
+                      type="date"
+                      value={formDataValidade}
+                      onChange={(e) => setFormDataValidade(e.target.value)}
+                      className="w-full px-3 py-2 bg-[#f1f3f5] border border-slate-300 rounded text-xs text-slate-800 focus:bg-white focus:border-teal-500 shadow-inner"
+                      required={exigeLoteValidade}
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wider mb-1">
+                      Valor Unitário na NF (R$)
+                    </label>
+                    <input
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      value={formValorUnitario}
+                      onChange={(e) => setFormValorUnitario(Number(e.target.value))}
+                      className="w-full px-3 py-2 bg-[#f1f3f5] border border-slate-300 rounded text-xs text-slate-800 font-mono focus:bg-white focus:border-teal-500 shadow-inner"
+                    />
+                  </div>
                 </div>
               </div>
             )}
@@ -519,12 +733,13 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
               <tr>
                 <th className="py-2.5 px-3">Data / Hora</th>
                 <th className="py-2.5 px-3">Documento / NF</th>
-                <th className="py-2.5 px-3">Código</th>
+                <th className="py-2.5 px-3">Código Único</th>
                 <th className="py-2.5 px-3">Produto Recebido</th>
+                <th className="py-2.5 px-3 text-center">Lote / Validade</th>
                 <th className="py-2.5 px-3 text-center">UN</th>
                 <th className="py-2.5 px-3 text-right">Qtd Adicionada</th>
-                <th className="py-2.5 px-3">Responsável (Almoxarife)</th>
-                <th className="py-2.5 px-3">Observações / Fornecedor</th>
+                <th className="py-2.5 px-3">Responsável</th>
+                <th className="py-2.5 px-3">Marca NF / Fornecedor</th>
                 <th className="py-2.5 px-3 text-right">Comprovante PDF</th>
               </tr>
             </thead>
@@ -536,14 +751,25 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
                       {new Date(ent.data_movimentacao).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' })}
                     </td>
                     <td className="py-2 px-3 font-mono font-bold text-slate-800">{ent.documento_referencia}</td>
-                    <td className="py-2 px-3 font-mono text-slate-600">{ent.produto_codigo}</td>
+                    <td className="py-2 px-3 font-mono font-semibold text-teal-800">{ent.produto_codigo}</td>
                     <td className="py-2 px-3 font-medium text-slate-800">{ent.produto_nome}</td>
+                    <td className="py-2 px-3 text-center font-mono text-[11px] text-slate-700">
+                      <div>{ent.numero_lote || '—'}</div>
+                      {ent.data_validade && (
+                        <div className="text-[10px] text-slate-500">
+                          Val: {ent.data_validade.split('-').reverse().join('/')}
+                        </div>
+                      )}
+                    </td>
                     <td className="py-2 px-3 text-center font-bold text-slate-600">{ent.unidade_medida}</td>
                     <td className="py-2 px-3 text-right font-mono font-bold text-emerald-700">
                       +{ent.quantidade}
                     </td>
-                    <td className="py-2 px-3 text-slate-600">{ent.usuario_nome}</td>
-                    <td className="py-2 px-3 text-slate-500 max-w-xs truncate">{ent.observacao}</td>
+                    <td className="py-2 px-3 text-slate-600">{ent.responsavel_nome || ent.usuario_nome}</td>
+                    <td className="py-2 px-3 text-slate-500 max-w-xs truncate">
+                      {ent.marca ? <span className="font-semibold text-slate-700">Marca: {ent.marca} • </span> : null}
+                      {ent.observacao}
+                    </td>
                     <td className="py-2 px-3 text-right whitespace-nowrap">
                       <div className="inline-flex items-center justify-end gap-1">
                         <button

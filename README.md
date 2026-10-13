@@ -102,23 +102,30 @@ O sistema é entregue em estado limpo, sem registros fictícios de demonstraçã
 - **Senha Inicial**: `admin123`
 - *Observação*: No primeiro login, o sistema exibe um aviso orientando a troca de senha para maior segurança.
 
-### Deploy na Vercel
+### Deploy no Ubuntu Server (Rede Local / VPS)
 
-O projeto já está configurado para deploy direto na **Vercel** (Frontend estático Vite em `dist/` + API Serverless Express em `api/index.ts` + configurações em `vercel.json`):
+O projeto já está configurado com o arquivo `ecosystem.config.cjs` para execução contínua via **PM2** no Ubuntu Server:
 
-1. **Via GitHub / GitLab / Bitbucket (Recomendado)**:
-   - Envie os arquivos do repositório para o seu Git.
-   - Acesse o painel da [Vercel](https://vercel.com/new) e importe o repositório.
-   - A Vercel detectará automaticamente o `vercel.json` (`Build Command: npm run build`, `Output Directory: dist`).
-   - Em *Project Settings > Node.js Version*, mantenha **22.x** (configurado em `package.json`).
-   - Clique em **Deploy**.
-
-2. **Via Vercel CLI**:
+1. **Clonar ou copiar os arquivos para o servidor e instalar dependências:**
    ```bash
-   npx vercel
-   # Para publicar diretamente em produção:
-   npx vercel --prod
+   npm install
+   npm run build
    ```
+
+2. **Configurar a Porta (caso a `3000` já esteja em uso por outro sistema):**
+   - Crie um arquivo `.env` baseado no `.env.example` (`cp .env.example .env`) e defina a porta desejada (ex: `PORT=3010`), **ou**
+   - Altere o valor de `PORT` diretamente no arquivo `ecosystem.config.cjs`.
+
+3. **Iniciar com PM2 (mantém o sistema ativo 24/7 e reinicia junto com o Ubuntu):**
+   ```bash
+   pm2 start ecosystem.config.cjs
+   pm2 save
+   ```
+   *(Caso não use PM2, você também pode iniciar diretamente com `npm start` ou `PORT=3010 npm start`).*
+
+4. **Acesso pelas estações na Rede Local:**
+   - Os computadores da mesma rede poderão acessar pelo IP do servidor Ubuntu:
+     **`http://IP-DO-SERVIDOR:3000`** (ou na porta configurada).
 
 ---
 

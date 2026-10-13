@@ -19,24 +19,31 @@ import {
   MapPin,
   TrendingDown,
   DollarSign,
-  Trash2
+  Trash2,
+  Truck,
+  PackagePlus
 } from 'lucide-react';
-import type { Produto, Usuario, UnidadeMedida, TipoProduto } from '../types/index.ts';
+import type { Produto, Fornecedor, ProdutoFornecedor, Usuario, UnidadeMedida, TipoProduto } from '../types/index.ts';
 import { useToast } from '../context/ToastContext.tsx';
 import { ConfirmDeleteModal } from './ConfirmDeleteModal.tsx';
+import { HelpFloatingModal } from './HelpFloatingModal.tsx';
 
 interface ProdutosViewProps {
   produtos: Produto[];
+  fornecedores?: Fornecedor[];
   currentUser: Usuario | null;
   onRefresh: () => void;
   onVoltar?: () => void;
+  onNavigate?: (tab: string) => void;
 }
 
 export const ProdutosView: React.FC<ProdutosViewProps> = ({
   produtos,
+  fornecedores = [],
   currentUser,
   onRefresh,
   onVoltar,
+  onNavigate,
 }) => {
   // Filtros de busca
   const [filtroCodigo, setFiltroCodigo] = useState('');
@@ -48,8 +55,15 @@ export const ProdutosView: React.FC<ProdutosViewProps> = ({
   // Controle de Formulário em Abas
   const [isFormOpen, setIsFormOpen] = useState(false);
   const [formMode, setFormMode] = useState<'create' | 'edit' | 'view'>('create');
-  const [activeFormTab, setActiveFormTab] = useState<'dados_principais' | 'controle_estoque' | 'historico'>('dados_principais');
+  const [activeFormTab, setActiveFormTab] = useState<'dados_principais' | 'controle_estoque' | 'lotes_validade' | 'fornecedores_marcas' | 'historico'>('dados_principais');
   const [editingId, setEditingId] = useState<number | null>(null);
+
+  // Campos de vínculo de Fornecedor/Marca no mesmo código de produto
+  const [vincFornecedorId, setVincFornecedorId] = useState<number>(0);
+  const [vincMarca, setVincMarca] = useState('');
+  const [vincNomenclatura, setVincNomenclatura] = useState('');
+  const [vincCodigoRef, setVincCodigoRef] = useState('');
+  const [isLinkingForn, setIsLinkingForn] = useState(false);
 
   // Campos do Formulário
   const [formCodigo, setFormCodigo] = useState('');
@@ -57,6 +71,7 @@ export const ProdutosView: React.FC<ProdutosViewProps> = ({
   const [formDescricao, setFormDescricao] = useState('');
   const [formUnidadeMedida, setFormUnidadeMedida] = useState<UnidadeMedida>('UN');
   const [formTipo, setFormTipo] = useState<TipoProduto>('consumivel');
+  const [formControlaValidade, setFormControlaValidade] = useState<number>(1);
   const [formEstoqueMinimo, setFormEstoqueMinimo] = useState<number>(10);
   const [formEstoqueMaximo, setFormEstoqueMaximo] = useState<number>(100);
   const [formQuantidadeAtual, setFormQuantidadeAtual] = useState<number>(0);
@@ -104,6 +119,7 @@ export const ProdutosView: React.FC<ProdutosViewProps> = ({
     setFormDescricao('');
     setFormUnidadeMedida('UN');
     setFormTipo('consumivel');
+    setFormControlaValidade(1);
     setFormEstoqueMinimo(20);
     setFormEstoqueMaximo(200);
     setFormQuantidadeAtual(0);
@@ -123,6 +139,7 @@ export const ProdutosView: React.FC<ProdutosViewProps> = ({
     setFormDescricao(p.descricao || '');
     setFormUnidadeMedida(p.unidade_medida);
     setFormTipo(p.tipo);
+    setFormControlaValidade(p.controla_validade === undefined ? (p.tipo === 'consumivel' ? 1 : 0) : p.controla_validade);
     setFormEstoqueMinimo(p.estoque_minimo);
     setFormEstoqueMaximo(p.estoque_maximo);
     setFormQuantidadeAtual(p.quantidade_atual);
@@ -147,7 +164,7 @@ export const ProdutosView: React.FC<ProdutosViewProps> = ({
     }
 
     if (!formCodigo || !formNome || !formUnidadeMedida || !formTipo) {
-      const msg = 'Código, nome, unidade de medida e tipo são obrigatórios.';
+      const msg = 'Código Único Interno, Descrição Padrão, Unidade de Medida e Tipo são obrigatórios.';
       setErrorMsg(msg);
       toast.error('Campos Obrigatórios', msg);
       setActiveFormTab('dados_principais');
@@ -164,6 +181,7 @@ export const ProdutosView: React.FC<ProdutosViewProps> = ({
         descricao: formDescricao ? formDescricao.trim() : null,
         unidade_medida: formUnidadeMedida,
         tipo: formTipo,
+        controla_validade: Number(formControlaValidade),
         estoque_minimo: Number(formEstoqueMinimo) || 0,
         estoque_maximo: Number(formEstoqueMaximo) || 0,
         valor_unitario: Number(formValorUnitario) || 0,
@@ -245,30 +263,125 @@ export const ProdutosView: React.FC<ProdutosViewProps> = ({
     }
   };
 
+  const editingProdutoObj = useMemo(
+    () => (editingId ? produtos.find((item) => item.id === editingId) || null : null),
+    [produtos, editingId]
+  );
+
+  const handleVincularFornecedor = async () => {
+    if (!editingId || !vincFornecedorId) {
+      toast.error('Fornecedor Obrigatório', 'Selecione um fornecedor cadastrado para vincular a este código de produto.');
+      return;
+    }
+    setIsLinkingForn(true);
+    try {
+      const res = await fetch(`/api/produtos/${editingId}/fornecedores`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `user:${currentUser?.id}`,
+        },
+        body: JSON.stringify({
+          fornecedor_id: vincFornecedorId,
+          marca: vincMarca.trim() || null,
+          nomenclatura_fornecedor: vincNomenclatura.trim() || null,
+          codigo_referencia_fornecedor: vincCodigoRef.trim() || null,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Erro ao vincular fornecedor.');
+      }
+      toast.success('Fornecedor / Marca Vinculado', data.message || 'Fornecedor vinculado ao mesmo código de produto.');
+      setVincFornecedorId(0);
+      setVincMarca('');
+      setVincNomenclatura('');
+      setVincCodigoRef('');
+      onRefresh();
+    } catch (err: any) {
+      toast.error('Erro ao Vincular', err.message || 'Não foi possível vincular o fornecedor.');
+    } finally {
+      setIsLinkingForn(false);
+    }
+  };
+
+  const handleRemoverVinculoFornecedor = async (vinculoId: number) => {
+    if (!editingId) return;
+    setIsLinkingForn(true);
+    try {
+      const res = await fetch(`/api/produtos/${editingId}/fornecedores/${vinculoId}`, {
+        method: 'DELETE',
+        headers: { 'Authorization': `user:${currentUser?.id}` },
+      });
+      if (res.ok) {
+        toast.info('Vínculo Removido', 'O vínculo de fornecedor/marca foi removido deste produto.');
+        onRefresh();
+      }
+    } finally {
+      setIsLinkingForn(false);
+    }
+  };
+
   return (
     <div className="space-y-6">
-      {/* Cabeçalho */}
-      <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex flex-col md:flex-row items-center justify-between gap-4">
+      {/* Cabeçalho Compacto */}
+      <div className="bg-white px-4 py-3 rounded-xl border border-slate-200 shadow-sm flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-3">
-          <div className="p-2.5 bg-teal-100 text-teal-800 rounded-lg">
+          <div className="p-2 bg-teal-100 text-teal-800 rounded-lg">
             <Package className="w-5 h-5" />
           </div>
           <div>
-            <h1 className="text-xl font-bold text-slate-800 tracking-tight">Consulta de Produtos / Materiais</h1>
-            <p className="text-xs text-slate-500">Catálogo hospitalar, saldos físicos e pontos de ressuprimento</p>
+            <h1 className="text-lg font-bold text-slate-800 tracking-tight">
+              Catálogo de Produtos (Código Interno Unificado)
+            </h1>
+            <p className="text-xs text-slate-500">
+              Gestão do catálogo padronizado, controle de lotes/validade e vínculo multifornecedor
+            </p>
           </div>
         </div>
 
-        {onVoltar && (
-          <button
-            type="button"
-            onClick={onVoltar}
-            className="bg-teal-600 hover:bg-teal-700 text-white font-medium px-4 py-2 rounded text-xs flex items-center gap-1.5 transition-all shadow uppercase tracking-wide cursor-pointer"
-          >
-            <ArrowLeft className="w-4 h-4" />
-            <span>VOLTAR AO PAINEL</span>
-          </button>
-        )}
+        <div className="flex items-center gap-2">
+          <HelpFloatingModal
+            title="Ajuda & Regras — Catálogo de Produtos (Código Único)"
+            subtitle="Passo 2 do Cadastro • Regras de Unificação Multifornecedor e Validade de Lotes"
+            currentStep={2}
+            onNavigate={onNavigate}
+            sections={[
+              {
+                title: 'Regra de Código Único de Produto (Multifornecedor)',
+                badge: 'Código Unificado',
+                tone: 'blue',
+                description:
+                  'Independentemente de fornecedores diferentes venderem com marcas ou nomenclaturas distintas (ex: "Papel A4 Chamex" vs "Papel A4 Report"), vincule todas as entradas ao mesmo Código de Produto Interno (ex: PROD-0045 - Papel A4 75g). O nome/marca comercial da NF é salvo apenas no histórico da entrada, mantendo o saldo unificado.',
+              },
+              {
+                title: 'Controle de Lote e Alertas de Validade (90 / 60 / 30 dias)',
+                badge: 'Monitoramento FEFO',
+                tone: 'amber',
+                description:
+                  'O sistema monitora automaticamente o vencimento dos lotes em estoque: Atenção em 90 dias (Amarelo), Alerta em 60 dias (Laranja) e Crítico em 30 dias (Vermelho).',
+              },
+              {
+                title: 'Bloqueio Automático por Vencimento',
+                badge: 'Segurança Assistencial',
+                tone: 'rose',
+                description:
+                  'Lotes cuja data de validade já expirou são bloqueados sumariamente para requisições de consumo ou transferências. A única movimentação permitida para lotes vencidos é a "Saída por Vencimento/Descarte".',
+              },
+            ]}
+          />
+
+          {onVoltar && (
+            <button
+              type="button"
+              onClick={onVoltar}
+              className="bg-teal-600 hover:bg-teal-700 text-white font-medium px-4 py-2 rounded text-xs flex items-center gap-1.5 transition-all shadow uppercase tracking-wide cursor-pointer"
+            >
+              <ArrowLeft className="w-4 h-4" />
+              <span>VOLTAR AO PAINEL</span>
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Formulário em Abas */}
@@ -301,41 +414,75 @@ export const ProdutosView: React.FC<ProdutosViewProps> = ({
           )}
 
           {/* Abas */}
-          <div className="flex border-b border-slate-200 px-6 pt-2 bg-slate-50/50">
+          <div className="flex flex-wrap border-b border-slate-200 px-6 pt-2 bg-slate-50/50">
             <button
               type="button"
               onClick={() => setActiveFormTab('dados_principais')}
-              className={`px-5 py-2.5 text-xs font-bold uppercase tracking-wider border-b-2 transition-all cursor-pointer ${
+              className={`px-4 py-2.5 text-xs font-bold uppercase tracking-wider border-b-2 transition-all cursor-pointer ${
                 activeFormTab === 'dados_principais'
                   ? 'border-teal-600 text-teal-700 bg-white rounded-t'
                   : 'border-transparent text-slate-500 hover:text-slate-700'
               }`}
             >
-              1. Dados Principais
+              1. Código Único & Dados Padrão
             </button>
 
             <button
               type="button"
               onClick={() => setActiveFormTab('controle_estoque')}
-              className={`px-5 py-2.5 text-xs font-bold uppercase tracking-wider border-b-2 transition-all cursor-pointer ${
+              className={`px-4 py-2.5 text-xs font-bold uppercase tracking-wider border-b-2 transition-all cursor-pointer ${
                 activeFormTab === 'controle_estoque'
                   ? 'border-teal-600 text-teal-700 bg-white rounded-t'
                   : 'border-transparent text-slate-500 hover:text-slate-700'
               }`}
             >
-              2. Controle de Estoque & Valores
+              2. Estoque Mínimo / Máximo
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setActiveFormTab('lotes_validade')}
+              className={`px-4 py-2.5 text-xs font-bold uppercase tracking-wider border-b-2 transition-all cursor-pointer flex items-center gap-1.5 ${
+                activeFormTab === 'lotes_validade'
+                  ? 'border-teal-600 text-teal-700 bg-white rounded-t'
+                  : 'border-transparent text-slate-500 hover:text-slate-700'
+              }`}
+            >
+              <span>3. Lotes & Validade</span>
+              {editingProdutoObj?.lotes && (
+                <span className="bg-teal-100 text-teal-800 px-1.5 py-0.5 rounded-full text-[10px]">
+                  {editingProdutoObj.lotes.length}
+                </span>
+              )}
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setActiveFormTab('fornecedores_marcas')}
+              className={`px-4 py-2.5 text-xs font-bold uppercase tracking-wider border-b-2 transition-all cursor-pointer flex items-center gap-1.5 ${
+                activeFormTab === 'fornecedores_marcas'
+                  ? 'border-teal-600 text-teal-700 bg-white rounded-t'
+                  : 'border-transparent text-slate-500 hover:text-slate-700'
+              }`}
+            >
+              <span>4. Fornecedores & Marcas (Mesmo Código)</span>
+              {editingProdutoObj?.fornecedores_vinculados && (
+                <span className="bg-teal-100 text-teal-800 px-1.5 py-0.5 rounded-full text-[10px]">
+                  {editingProdutoObj.fornecedores_vinculados.length}
+                </span>
+              )}
             </button>
 
             <button
               type="button"
               onClick={() => setActiveFormTab('historico')}
-              className={`px-5 py-2.5 text-xs font-bold uppercase tracking-wider border-b-2 transition-all cursor-pointer ${
+              className={`px-4 py-2.5 text-xs font-bold uppercase tracking-wider border-b-2 transition-all cursor-pointer ${
                 activeFormTab === 'historico'
                   ? 'border-teal-600 text-teal-700 bg-white rounded-t'
                   : 'border-transparent text-slate-500 hover:text-slate-700'
               }`}
             >
-              3. Histórico de Movimentações
+              5. Rastreabilidade
             </button>
           </div>
 
@@ -345,7 +492,7 @@ export const ProdutosView: React.FC<ProdutosViewProps> = ({
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                 <div>
                   <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wider mb-1">
-                    Código do Catálogo *
+                    Código Único Interno *
                   </label>
                   <input
                     type="text"
@@ -353,14 +500,14 @@ export const ProdutosView: React.FC<ProdutosViewProps> = ({
                     onChange={(e) => setFormCodigo(e.target.value)}
                     disabled={formMode === 'view'}
                     className="w-full px-3 py-2 bg-[#f1f3f5] border border-slate-300 rounded text-xs text-slate-800 font-mono focus:bg-white focus:border-teal-500 shadow-inner"
-                    placeholder="ex: MAT-001"
+                    placeholder="ex: MAT-001 ou PROD-0045"
                     required
                   />
                 </div>
 
                 <div className="md:col-span-2">
                   <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wider mb-1">
-                    Nome / Descrição Resumida *
+                    Descrição Padrão no Catálogo *
                   </label>
                   <input
                     type="text"
@@ -368,7 +515,7 @@ export const ProdutosView: React.FC<ProdutosViewProps> = ({
                     onChange={(e) => setFormNome(e.target.value)}
                     disabled={formMode === 'view'}
                     className="w-full px-3 py-2 bg-[#f1f3f5] border border-slate-300 rounded text-xs text-slate-800 focus:bg-white focus:border-teal-500 shadow-inner"
-                    placeholder="ex: Seringa Descartável 10ml"
+                    placeholder="ex: Papel A4 75g / Seringa Descartável 10ml"
                     required
                   />
                 </div>
@@ -415,12 +562,31 @@ export const ProdutosView: React.FC<ProdutosViewProps> = ({
                   </label>
                   <select
                     value={formTipo}
-                    onChange={(e) => setFormTipo(e.target.value as TipoProduto)}
+                    onChange={(e) => {
+                      const novoTipo = e.target.value as TipoProduto;
+                      setFormTipo(novoTipo);
+                      setFormControlaValidade(novoTipo === 'consumivel' ? 1 : 0);
+                    }}
                     disabled={formMode === 'view'}
                     className="w-full px-3 py-2 bg-[#f1f3f5] border border-slate-300 rounded text-xs text-slate-800 focus:bg-white focus:border-teal-500 shadow-inner cursor-pointer"
                   >
                     <option value="consumivel">Consumível (Baixa definitiva por Requisição)</option>
                     <option value="nao_consumivel">Não Consumível (Aparelho / Equipamento p/ Empréstimo)</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wider mb-1">
+                    Controle de Lote e Validade *
+                  </label>
+                  <select
+                    value={formControlaValidade}
+                    onChange={(e) => setFormControlaValidade(Number(e.target.value))}
+                    disabled={formMode === 'view'}
+                    className="w-full px-3 py-2 bg-[#f1f3f5] border border-slate-300 rounded text-xs text-slate-800 focus:bg-white focus:border-teal-500 shadow-inner cursor-pointer"
+                  >
+                    <option value={1}>Sim - Obrigatório Lote e Validade na Entrada</option>
+                    <option value={0}>Opcional - Item não perecível</option>
                   </select>
                 </div>
 
@@ -436,6 +602,21 @@ export const ProdutosView: React.FC<ProdutosViewProps> = ({
                     className="w-full px-3 py-2 bg-[#f1f3f5] border border-slate-300 rounded text-xs text-slate-800 focus:bg-white focus:border-teal-500 shadow-inner"
                     placeholder="ex: Prateleira B-04"
                   />
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wider mb-1">
+                    Situação do Produto
+                  </label>
+                  <select
+                    value={formAtivo}
+                    onChange={(e) => setFormAtivo(Number(e.target.value))}
+                    disabled={formMode === 'view'}
+                    className="w-full px-3 py-2 bg-[#f1f3f5] border border-slate-300 rounded text-xs text-slate-800 focus:bg-white focus:border-teal-500 shadow-inner cursor-pointer"
+                  >
+                    <option value={1}>Ativo no Catálogo</option>
+                    <option value={0}>Inativo</option>
+                  </select>
                 </div>
               </div>
             )}
@@ -500,7 +681,209 @@ export const ProdutosView: React.FC<ProdutosViewProps> = ({
               </div>
             )}
 
-            {/* ABA 3: HISTÓRICO */}
+            {/* ABA 3: LOTES EM ESTOQUE & CONTROLE DE VALIDADE (90 / 60 / 30 DIAS E BLOQUEIO) */}
+            {activeFormTab === 'lotes_validade' && (
+              <div className="space-y-3">
+                <div className="border border-slate-200 rounded-lg overflow-hidden">
+                  <table className="w-full text-left text-xs">
+                    <thead className="bg-slate-100 text-slate-700 font-bold uppercase tracking-wider border-b border-slate-200">
+                      <tr>
+                        <th className="py-2 px-3">Nº Lote</th>
+                        <th className="py-2 px-3 text-center">Validade</th>
+                        <th className="py-2 px-3 text-center">Status / Alerta</th>
+                        <th className="py-2 px-3">Fornecedor / Marca NF</th>
+                        <th className="py-2 px-3 text-right">Saldo do Lote</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-200">
+                      {(editingProdutoObj?.lotes || []).length > 0 ? (
+                        (editingProdutoObj?.lotes || []).map((lt) => {
+                          const st = lt.status_validade;
+                          return (
+                            <tr key={lt.id} className="hover:bg-slate-50">
+                              <td className="py-2 px-3 font-mono font-bold text-slate-800">{lt.numero_lote}</td>
+                              <td className="py-2 px-3 text-center font-mono text-slate-700">
+                                {lt.data_validade ? lt.data_validade.split('-').reverse().join('/') : 'Indeterminada'}
+                              </td>
+                              <td className="py-2 px-3 text-center">
+                                {st === 'vencido' ? (
+                                  <span className="px-2 py-0.5 rounded bg-red-900 text-white font-bold text-[10px] uppercase">
+                                    BLOQUEADO • VENCIDO ({Math.abs(lt.dias_para_vencer || 0)}d)
+                                  </span>
+                                ) : st === 'critico_30d' ? (
+                                  <span className="px-2 py-0.5 rounded bg-rose-100 text-rose-800 border border-rose-300 font-bold text-[10px] uppercase">
+                                    CRÍTICO ≤ 30d ({lt.dias_para_vencer}d)
+                                  </span>
+                                ) : st === 'alerta_60d' ? (
+                                  <span className="px-2 py-0.5 rounded bg-orange-100 text-orange-800 border border-orange-300 font-bold text-[10px] uppercase">
+                                    ALERTA ≤ 60d ({lt.dias_para_vencer}d)
+                                  </span>
+                                ) : st === 'atencao_90d' ? (
+                                  <span className="px-2 py-0.5 rounded bg-amber-100 text-amber-800 border border-amber-300 font-bold text-[10px] uppercase">
+                                    ATENÇÃO ≤ 90d ({lt.dias_para_vencer}d)
+                                  </span>
+                                ) : (
+                                  <span className="px-2 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-200 font-bold text-[10px] uppercase">
+                                    REGULAR {lt.dias_para_vencer != null ? `(${lt.dias_para_vencer}d)` : ''}
+                                  </span>
+                                )}
+                              </td>
+                              <td className="py-2 px-3 text-slate-600">
+                                {lt.fornecedor_nome || 'Estoque Inicial'}
+                                {lt.marca ? ` • Marca: ${lt.marca}` : ''}
+                              </td>
+                              <td className="py-2 px-3 text-right font-mono font-bold text-slate-800">
+                                {lt.quantidade_atual} {formUnidadeMedida}
+                              </td>
+                            </tr>
+                          );
+                        })
+                      ) : (
+                        <tr>
+                          <td colSpan={5} className="py-6 text-center text-slate-400">
+                            Nenhum lote ativo registrado para este item. Os lotes são gerados nas Entradas por Nota Fiscal ou Entradas Diversas.
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {/* ABA 3: FORNECEDORES & MARCAS EQUIVALENTES (MESMO CÓDIGO NO ESTOQUE) */}
+            {activeFormTab === 'fornecedores_marcas' && (
+              <div className="space-y-3">
+                {formMode === 'create' ? (
+                  <div className="p-4 bg-slate-50 border border-slate-200 rounded-lg text-xs text-slate-600">
+                    Salve o cadastro inicial deste produto primeiro para habilitar o vínculo direto de fornecedores e marcas,
+                    ou vincule automaticamente no momento da <strong>Entrada de Estoque por Nota Fiscal</strong>.
+                  </div>
+                ) : (
+                  <>
+                    {formMode === 'edit' && canEdit && (
+                      <div className="p-4 bg-slate-50 border border-slate-200 rounded-lg space-y-3">
+                        <div className="text-xs font-bold text-slate-700 uppercase tracking-wide">
+                          Vincular Fornecedor / Marca Homologada ao Código {formCodigo}
+                        </div>
+                        <div className="grid grid-cols-1 md:grid-cols-12 gap-3 items-end">
+                          <div className="md:col-span-4">
+                            <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">
+                              Fornecedor Cadastrado *
+                            </label>
+                            <select
+                              value={vincFornecedorId}
+                              onChange={(e) => setVincFornecedorId(Number(e.target.value))}
+                              className="w-full px-3 py-2 bg-white border border-slate-300 rounded text-xs text-slate-800 focus:border-teal-500 cursor-pointer"
+                            >
+                              <option value={0}>Selecione o fornecedor...</option>
+                              {fornecedores
+                                .filter((f) => f.ativo === 1)
+                                .map((f) => (
+                                  <option key={f.id} value={f.id}>
+                                    {f.codigo} - {f.nome_fantasia || f.razao_social}
+                                  </option>
+                                ))}
+                            </select>
+                          </div>
+
+                          <div className="md:col-span-3">
+                            <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">
+                              Marca Comercial
+                            </label>
+                            <input
+                              type="text"
+                              value={vincMarca}
+                              onChange={(e) => setVincMarca(e.target.value)}
+                              placeholder="ex: BD / Descarpack"
+                              className="w-full px-3 py-2 bg-white border border-slate-300 rounded text-xs text-slate-800 focus:border-teal-500"
+                            />
+                          </div>
+
+                          <div className="md:col-span-3">
+                            <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">
+                              Nomenclatura na NF do Fornecedor
+                            </label>
+                            <input
+                              type="text"
+                              value={vincNomenclatura}
+                              onChange={(e) => setVincNomenclatura(e.target.value)}
+                              placeholder="Descrição usada na NF..."
+                              className="w-full px-3 py-2 bg-white border border-slate-300 rounded text-xs text-slate-800 focus:border-teal-500"
+                            />
+                          </div>
+
+                          <div className="md:col-span-2">
+                            <button
+                              type="button"
+                              disabled={isLinkingForn || !vincFornecedorId}
+                              onClick={handleVincularFornecedor}
+                              className="w-full bg-teal-600 hover:bg-teal-700 text-white font-semibold py-2 px-3 rounded text-xs flex items-center justify-center gap-1 uppercase tracking-wide transition-all shadow cursor-pointer disabled:opacity-50"
+                            >
+                              <Plus className="w-3.5 h-3.5" />
+                              <span>VINCULAR</span>
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    <div className="border border-slate-200 rounded-lg overflow-hidden">
+                      <table className="w-full text-left text-xs">
+                        <thead className="bg-slate-100 text-slate-700 font-bold uppercase tracking-wider border-b border-slate-200">
+                          <tr>
+                            <th className="py-2 px-3">Fornecedor</th>
+                            <th className="py-2 px-3">Marca</th>
+                            <th className="py-2 px-3">Nomenclatura na NF</th>
+                            <th className="py-2 px-3 text-right">Último Valor (R$)</th>
+                            {formMode === 'edit' && canEdit && <th className="py-2 px-3 text-right">Ação</th>}
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-200">
+                          {(editingProdutoObj?.fornecedores_vinculados || []).length > 0 ? (
+                            (editingProdutoObj?.fornecedores_vinculados || []).map((vf: ProdutoFornecedor) => (
+                              <tr key={vf.id} className="hover:bg-slate-50">
+                                <td className="py-2 px-3 font-medium text-slate-800">
+                                  <span className="font-mono font-bold text-teal-800">{vf.fornecedor_codigo}</span> —{' '}
+                                  {vf.fornecedor_nome_fantasia || vf.fornecedor_razao_social}
+                                </td>
+                                <td className="py-2 px-3 text-slate-700 font-semibold">{vf.marca || 'Padrão'}</td>
+                                <td className="py-2 px-3 text-slate-600">{vf.nomenclatura_fornecedor || formNome}</td>
+                                <td className="py-2 px-3 text-right font-mono text-slate-700">
+                                  {vf.ultimo_valor_unitario
+                                    ? `R$ ${Number(vf.ultimo_valor_unitario).toFixed(2)}`
+                                    : '—'}
+                                </td>
+                                {formMode === 'edit' && canEdit && (
+                                  <td className="py-2 px-3 text-right">
+                                    <button
+                                      type="button"
+                                      onClick={() => handleRemoverVinculoFornecedor(vf.id)}
+                                      className="p-1 text-rose-600 hover:bg-rose-50 rounded cursor-pointer"
+                                      title="Remover vínculo"
+                                    >
+                                      <Trash2 className="w-3.5 h-3.5" />
+                                    </button>
+                                  </td>
+                                )}
+                              </tr>
+                            ))
+                          ) : (
+                            <tr>
+                              <td colSpan={5} className="py-6 text-center text-slate-400">
+                                Nenhum fornecedor/marca vinculado ainda. Os vínculos também são criados automaticamente ao lançar uma Nota Fiscal.
+                              </td>
+                            </tr>
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+
+            {/* ABA 4: HISTÓRICO */}
             {activeFormTab === 'historico' && (
               <div className="p-4 bg-slate-50 rounded border border-slate-200 space-y-2 max-w-xl">
                 <div className="text-xs font-bold text-slate-700">Rastreabilidade no Livro Razão</div>
@@ -664,7 +1047,50 @@ export const ProdutosView: React.FC<ProdutosViewProps> = ({
                   return (
                     <tr key={p.id} className="odd:bg-white even:bg-slate-50/70 hover:bg-teal-50/40 transition-colors">
                       <td className="py-2 px-3 font-mono font-semibold text-slate-700">{p.codigo}</td>
-                      <td className="py-2 px-3 font-medium text-slate-800">{p.nome}</td>
+                      <td className="py-2 px-3 font-medium text-slate-800">
+                        <div>{p.nome}</div>
+                        {p.fornecedores_vinculados && p.fornecedores_vinculados.length > 0 && (
+                          <div className="flex flex-wrap items-center gap-1 mt-0.5">
+                            <span className="text-[10px] font-semibold text-teal-800 bg-teal-50 border border-teal-200 px-1.5 py-0.2 rounded">
+                              {p.fornecedores_vinculados.length} forn./marca(s) neste código
+                            </span>
+                            {p.fornecedores_vinculados.slice(0, 2).map((vf) => (
+                              <span
+                                key={vf.id}
+                                className="text-[10px] text-slate-500 bg-slate-100 px-1.5 py-0.2 rounded"
+                                title={`Fornecedor: ${vf.fornecedor_razao_social} | Marca: ${vf.marca || 'Padrão'} | Nomenclatura NF: ${vf.nomenclatura_fornecedor || p.nome}`}
+                              >
+                                {vf.fornecedor_nome_fantasia || vf.fornecedor_razao_social}
+                                {vf.marca ? ` (${vf.marca})` : ''}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                        {p.lotes && p.lotes.length > 0 && (
+                          <div className="flex flex-wrap items-center gap-1 mt-1">
+                            {p.lotes.some((l) => l.status_validade === 'vencido') && (
+                              <span className="text-[9px] font-bold uppercase bg-red-900 text-white px-1.5 py-0.5 rounded">
+                                Lote Vencido (Bloqueado)
+                              </span>
+                            )}
+                            {p.lotes.some((l) => l.status_validade === 'critico_30d') && (
+                              <span className="text-[9px] font-bold uppercase bg-rose-100 text-rose-800 border border-rose-300 px-1.5 py-0.5 rounded">
+                                Vence ≤ 30 dias (Crítico)
+                              </span>
+                            )}
+                            {p.lotes.some((l) => l.status_validade === 'alerta_60d') && (
+                              <span className="text-[9px] font-bold uppercase bg-orange-100 text-orange-800 border border-orange-300 px-1.5 py-0.5 rounded">
+                                Vence ≤ 60 dias (Alerta)
+                              </span>
+                            )}
+                            {p.lotes.some((l) => l.status_validade === 'atencao_90d') && (
+                              <span className="text-[9px] font-bold uppercase bg-amber-100 text-amber-800 border border-amber-300 px-1.5 py-0.5 rounded">
+                                Vence ≤ 90 dias (Atenção)
+                              </span>
+                            )}
+                          </div>
+                        )}
+                      </td>
                       <td className="py-2 px-3 text-center font-bold text-slate-600">{p.unidade_medida}</td>
                       <td className="py-2 px-3 text-center">
                         <span

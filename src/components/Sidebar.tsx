@@ -1,6 +1,5 @@
 import React from 'react';
 import { 
-  LayoutDashboard, 
   Users, 
   Building2, 
   Package, 
@@ -15,7 +14,9 @@ import {
   LogOut,
   Hospital,
   LayoutGrid,
-  HardDriveDownload
+  HardDriveDownload,
+  Truck,
+  PanelLeftClose
 } from 'lucide-react';
 import type { Usuario, EmpresaUnidade } from '../types/index.ts';
 
@@ -26,6 +27,7 @@ interface SidebarProps {
   activeUnidade?: EmpresaUnidade | null;
   onGoToGrid: () => void;
   onLogout: () => void;
+  onCloseSidebar?: () => void;
   pendingRequisitionsCount: number;
   overdueLoansCount: number;
   lowStockCount: number;
@@ -38,32 +40,21 @@ export const Sidebar: React.FC<SidebarProps> = ({
   activeUnidade,
   onGoToGrid,
   onLogout,
+  onCloseSidebar,
   pendingRequisitionsCount,
   overdueLoansCount,
   lowStockCount,
 }) => {
   const navItems = [
     {
-      id: 'dashboard',
-      label: 'Dashboard',
-      icon: LayoutDashboard,
-      roles: ['admin', 'almoxarife', 'requisitante'],
-    },
-    {
-      id: 'usuarios',
-      label: 'Usuário',
-      icon: Users,
-      roles: ['admin', 'almoxarife'],
-    },
-    {
-      id: 'centros-custo',
-      label: 'Centro de Custo',
-      icon: Building2,
+      id: 'fornecedores',
+      label: 'Fornecedores / Entidades',
+      icon: Truck,
       roles: ['admin', 'almoxarife', 'requisitante'],
     },
     {
       id: 'produtos',
-      label: 'Produtos / Itens',
+      label: 'Produtos / Catálogo',
       icon: Package,
       badge: lowStockCount > 0 ? `${lowStockCount} baixo` : undefined,
       badgeType: 'amber',
@@ -71,9 +62,23 @@ export const Sidebar: React.FC<SidebarProps> = ({
     },
     {
       id: 'entradas',
-      label: 'Entrada de Estoque',
+      label: 'Entrada por Nota Fiscal',
       icon: PackagePlus,
       roles: ['admin', 'almoxarife'],
+    },
+    {
+      id: 'movimentacoes',
+      label: 'Movimentações Diversas',
+      icon: ArrowLeftRight,
+      roles: ['admin', 'almoxarife'],
+    },
+    {
+      id: 'emprestimos',
+      label: 'Empréstimos / Entidades',
+      icon: RotateCcw,
+      badge: overdueLoansCount > 0 ? `${overdueLoansCount} pend.` : undefined,
+      badgeType: 'red',
+      roles: ['admin', 'almoxarife', 'requisitante'],
     },
     {
       id: 'requisicoes',
@@ -90,24 +95,22 @@ export const Sidebar: React.FC<SidebarProps> = ({
       roles: ['admin', 'almoxarife'],
     },
     {
-      id: 'emprestimos',
-      label: 'Empréstimos',
-      icon: RotateCcw,
-      badge: overdueLoansCount > 0 ? `${overdueLoansCount} atraso` : undefined,
-      badgeType: 'red',
+      id: 'centros-custo',
+      label: 'Centro de Custo',
+      icon: Building2,
       roles: ['admin', 'almoxarife', 'requisitante'],
     },
     {
-      id: 'movimentacoes',
-      label: 'Livro Razão & Auditoria',
-      icon: ArrowLeftRight,
+      id: 'usuarios',
+      label: 'Usuário',
+      icon: Users,
       roles: ['admin', 'almoxarife'],
     },
     {
       id: 'relatorios',
-      label: 'Relatórios',
+      label: 'Relatórios & Geral PDF',
       icon: FileBarChart,
-      badge: '11',
+      badge: '14',
       badgeType: 'teal',
       roles: ['admin', 'almoxarife', 'requisitante'],
     },
@@ -138,29 +141,27 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
   return (
     <aside className="w-64 bg-[#0c1836] text-slate-200 flex flex-col h-full border-r border-[#1a2d59] shrink-0 select-none">
-      {/* Topo: Logo AlmoxControl & Botão Menu de Módulos */}
-      <div className="p-4 border-b border-[#1a2d59]">
-        <div className="flex items-center gap-3">
-          <div className="w-11 h-11 rounded-xl bg-white p-1 shadow-md border border-slate-200/50 flex items-center justify-center shrink-0">
-            <img src="/logo.png" alt="Logo Santa Casa SBC" className="w-full h-full object-contain" />
-          </div>
-          <div>
-            <div className="flex items-center gap-1.5">
-              <span className="font-black text-white text-base tracking-tight">ALMOXCONTROL</span>
-            </div>
-            <p className="text-[10px] text-[#6EC1E4] font-semibold uppercase tracking-wider">Gestão de Almoxarifado</p>
-          </div>
-        </div>
-
-        {/* Botão de Atalho para o Menu em Grade */}
+      {/* Topo do Menu Lateral: Atalho para o Menu em Grade + Botão Ocultar */}
+      <div className="p-3 border-b border-[#1a2d59] flex items-center gap-2">
         <button
           type="button"
           onClick={onGoToGrid}
-          className="mt-3 w-full py-2 px-3 rounded-lg bg-[#00237D]/60 hover:bg-[#00237D] text-white border border-[#6EC1E4]/30 text-xs font-semibold flex items-center justify-center gap-2 transition-all cursor-pointer shadow-xs"
+          className="flex-1 py-2 px-3 rounded-lg bg-[#00237D]/60 hover:bg-[#00237D] text-white border border-[#6EC1E4]/30 text-xs font-semibold flex items-center justify-center gap-2 transition-all cursor-pointer shadow-xs"
         >
           <LayoutGrid className="w-4 h-4 text-[#6EC1E4]" />
           <span>Painel em Grade</span>
         </button>
+
+        {onCloseSidebar && (
+          <button
+            type="button"
+            onClick={onCloseSidebar}
+            title="Ocultar menu lateral"
+            className="p-2 rounded-lg bg-[#14234b] hover:bg-[#1e346d] text-slate-300 hover:text-white border border-[#1e346d] transition-colors cursor-pointer shrink-0"
+          >
+            <PanelLeftClose className="w-4 h-4" />
+          </button>
+        )}
       </div>
 
       {/* Cartão do Operador e Unidade Ativa */}

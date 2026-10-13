@@ -5,6 +5,25 @@ export type StatusRequisicao = 'pendente' | 'aprovada_atendida' | 'rejeitada' | 
 export type PrioridadeRequisicao = 'normal' | 'urgente';
 export type StatusEmprestimo = 'emprestado' | 'devolvido' | 'atrasado';
 export type TipoMovimentacao = 'entrada' | 'saida' | 'estorno_entrada' | 'estorno_saida';
+export type TipoEntidadeFornecedor = 'fornecedor_comercial' | 'entidade_parceira';
+export type TipoEmprestimoInstitucional = 'recebido' | 'concedido';
+export type StatusEmprestimoInstitucional = 'pendente_devolucao' | 'quitado';
+
+export type MotivoSaidaDiversa =
+  | 'Vencimento/Descarte'
+  | 'Avaria/Quebra'
+  | 'Perda/Extravio'
+  | 'Ajuste de Inventário (-)'
+  | 'Doação/Empréstimo Concedido'
+  | 'Empréstimo Concedido a Terceiros'
+  | 'Devolução de Empréstimo a Terceiros';
+
+export type MotivoEntradaDiversa =
+  | 'Ajuste de Inventário (+)'
+  | 'Doação Recebida'
+  | 'Devolução de Empréstimo entre Entidades'
+  | 'Entrada por Empréstimo Recebido'
+  | 'Recebimento de Devolução de Empréstimo';
 
 export interface EmpresaUnidade {
   id: number;
@@ -50,6 +69,63 @@ export interface Usuario {
   usando_senha_padrao?: boolean;
 }
 
+export interface ProdutoFornecedor {
+  id: number;
+  produto_id: number;
+  fornecedor_id: number;
+  fornecedor_codigo?: string;
+  fornecedor_razao_social?: string;
+  fornecedor_nome_fantasia?: string | null;
+  fornecedor_cnpj?: string | null;
+  marca?: string | null;
+  nomenclatura_fornecedor?: string | null;
+  codigo_referencia_fornecedor?: string | null;
+  ultimo_valor_unitario?: number | null;
+  ultima_compra?: string | null;
+  criado_em?: string;
+}
+
+export interface Fornecedor {
+  id: number;
+  codigo: string;
+  razao_social: string;
+  nome_fantasia?: string | null;
+  cnpj?: string | null;
+  tipo_entidade?: TipoEntidadeFornecedor;
+  inscricao_estadual?: string | null;
+  telefone?: string | null;
+  email?: string | null;
+  contato_responsavel?: string | null;
+  endereco?: string | null;
+  cidade?: string | null;
+  uf?: string | null;
+  observacoes?: string | null;
+  ativo: number;
+  criado_em: string;
+  total_produtos_vinculados?: number;
+  total_entradas?: number;
+}
+
+export interface LoteEstoque {
+  id: number;
+  produto_id: number;
+  produto_codigo?: string;
+  produto_nome?: string;
+  unidade_medida?: string;
+  numero_lote: string;
+  data_validade?: string | null;
+  quantidade_inicial?: number;
+  quantidade_atual: number;
+  fornecedor_id?: number | null;
+  fornecedor_nome?: string | null;
+  documento_referencia?: string | null;
+  marca?: string | null;
+  nomenclatura_fornecedor?: string | null;
+  criado_em?: string;
+  dias_para_vencer?: number | null;
+  status_validade?: 'vencido' | 'critico_30d' | 'alerta_60d' | 'atencao_90d' | 'regular' | 'sem_validade';
+}
+
 export interface Produto {
   id: number;
   codigo: string;
@@ -57,13 +133,18 @@ export interface Produto {
   descricao?: string | null;
   unidade_medida: UnidadeMedida;
   tipo: TipoProduto;
+  controla_validade?: number;
   estoque_minimo: number;
   estoque_maximo: number;
   quantidade_atual: number;
+  quantidade_bloqueada_vencida?: number;
+  quantidade_disponivel_valida?: number;
   valor_unitario?: number | null;
   localizacao?: string | null;
   ativo: number;
   criado_em: string;
+  fornecedores_vinculados?: ProdutoFornecedor[];
+  lotes?: LoteEstoque[];
 }
 
 export type StatusItemRequisicao = 'pendente' | 'aprovado' | 'negado';
@@ -76,7 +157,8 @@ export type AcaoHistoricoRequisicao =
   | 'aprovacao_total'
   | 'aprovacao_parcial'
   | 'rejeicao_total'
-  | 'cancelamento';
+  | 'cancelamento'
+  | 'alteracao_prioridade';
 
 export interface ItemRequisicao {
   id: number;
@@ -173,17 +255,59 @@ export interface Emprestimo {
   almoxarife_recebimento_nome?: string | null;
 }
 
+export interface ItemEmprestimoInstitucional {
+  id: number;
+  emprestimo_id: number;
+  produto_id: number;
+  produto_codigo?: string;
+  produto_nome?: string;
+  unidade_medida?: string;
+  lote_id?: number | null;
+  numero_lote?: string | null;
+  data_validade?: string | null;
+  quantidade: number;
+  quantidade_devolvida: number;
+}
+
+export interface EmprestimoInstitucional {
+  id: number;
+  numero_documento: string;
+  tipo: TipoEmprestimoInstitucional; // 'recebido' | 'concedido'
+  entidade_id: number;
+  entidade_codigo?: string;
+  entidade_nome?: string;
+  entidade_nome_fantasia?: string | null;
+  entidade_cnpj?: string | null;
+  entidade_tipo?: TipoEntidadeFornecedor;
+  data_operacao: string;
+  data_prevista_devolucao?: string | null;
+  data_quitacao?: string | null;
+  status: StatusEmprestimoInstitucional; // 'pendente_devolucao' | 'quitado'
+  responsavel_almoxarifado_id: number;
+  responsavel_almoxarifado_nome?: string;
+  responsavel_entidade_nome?: string | null;
+  observacao?: string | null;
+  itens?: ItemEmprestimoInstitucional[];
+}
+
 export interface Movimentacao {
   id: number;
   tipo: TipoMovimentacao;
+  motivo_diverso?: string | null;
   produto_id: number;
+  lote_id?: number | null;
   quantidade: number;
   centro_custo_id: number | null;
+  fornecedor_id?: number | null;
+  emprestimo_institucional_id?: number | null;
   usuario_id: number;
+  responsavel_nome?: string | null;
   documento_referencia: string | null;
   numero_lote?: string | null;
   data_validade?: string | null;
   valor_unitario?: number | null;
+  marca?: string | null;
+  nomenclatura_fornecedor?: string | null;
   observacao: string | null;
   data_movimentacao: string;
   produto_codigo?: string;
@@ -192,6 +316,10 @@ export interface Movimentacao {
   produto_tipo?: string;
   centro_custo_codigo?: string;
   centro_custo_nome?: string;
+  fornecedor_codigo?: string | null;
+  fornecedor_nome?: string | null;
+  fornecedor_cnpj?: string | null;
+  fornecedor_tipo?: string | null;
   usuario_nome?: string;
   usuario_perfil?: string;
 }
@@ -202,6 +330,11 @@ export interface DashboardStats {
     requisicoes_pendentes: number;
     emprestimos_ativos: number;
     emprestimos_atrasados: number;
+    emprestimos_institucionais_pendentes?: number;
+    lotes_vencidos?: number;
+    lotes_critico_30d?: number;
+    lotes_alerta_60d?: number;
+    lotes_atencao_90d?: number;
     total_produtos: number;
     total_requisicoes_mes?: number;
     total_valor_estoque?: number;
@@ -214,6 +347,7 @@ export interface DashboardStats {
     total_unidades: number;
   }>;
   produtos_criticos: Produto[];
+  lotes_alerta_validade?: LoteEstoque[];
   ultimas_movimentacoes: Movimentacao[];
 }
 

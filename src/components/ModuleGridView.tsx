@@ -1,6 +1,5 @@
 import React, { useState } from 'react';
 import {
-  LayoutDashboard,
   Users,
   Building2,
   Package,
@@ -15,7 +14,9 @@ import {
   Hospital,
   Sparkles,
   ArrowRight,
-  HardDriveDownload
+  HardDriveDownload,
+  Truck,
+  ArrowLeftRight
 } from 'lucide-react';
 import type { Usuario, EmpresaUnidade, Produto, Requisicao } from '../types/index.ts';
 import { NotificationsDropdown } from './NotificationsDropdown.tsx';
@@ -45,23 +46,67 @@ export const ModuleGridView: React.FC<ModuleGridViewProps> = ({
 }) => {
   const [searchTerm, setSearchTerm] = useState('');
 
-  // Lista de módulos com regras de visibilidade por perfil
+  // Lista de módulos com regras de visibilidade por perfil e separação estrutural de cadastros
   const allModules = [
     {
-      id: 'dashboard',
-      label: 'Dashboard',
-      descricao: 'Indicadores gerais, gráficos de consumo e alertas',
-      icon: LayoutDashboard,
-      badge: itensEstoqueBaixoCount > 0 ? `${itensEstoqueBaixoCount} baixos` : null,
-      badgeColor: 'bg-amber-500',
+      id: 'fornecedores',
+      label: 'Fornecedores / Entidades',
+      descricao: 'Cadastro próprio de fornecedores comerciais e hospitais parceiros',
+      icon: Truck,
+      badge: 'Etapa 1',
+      badgeColor: 'bg-teal-600 text-white',
       allowedRoles: ['admin', 'almoxarife', 'requisitante'],
     },
     {
-      id: 'usuarios',
-      label: 'Usuário',
-      descricao: 'Consulta, cadastro e permissões de operadores',
-      icon: Users,
+      id: 'produtos',
+      label: 'Produtos / Catálogo',
+      descricao: 'Catálogo com código único interno, estoque mín/máx e lotes',
+      icon: Package,
+      badge: itensEstoqueBaixoCount > 0 ? `${itensEstoqueBaixoCount} crítico` : 'Etapa 2',
+      badgeColor: itensEstoqueBaixoCount > 0 ? 'bg-rose-500 text-white' : 'bg-teal-600 text-white',
+      allowedRoles: ['admin', 'almoxarife', 'requisitante'],
+    },
+    {
+      id: 'entradas',
+      label: 'Entrada por Nota Fiscal',
+      descricao: 'Operação separada de entrada de NF vinculada ao código interno e lote',
+      icon: PackagePlus,
+      badge: 'Etapa 3',
+      badgeColor: 'bg-blue-600 text-white',
+      allowedRoles: ['admin', 'almoxarife'],
+    },
+    {
+      id: 'movimentacoes',
+      label: 'Movimentações Diversas',
+      descricao: 'Saídas por vencimento/descarte, avaria, perda, doação e livro-caixa',
+      icon: ArrowLeftRight,
       badge: null,
+      allowedRoles: ['admin', 'almoxarife'],
+    },
+    {
+      id: 'emprestimos',
+      label: 'Empréstimos entre Entidades',
+      descricao: 'Empréstimo recebido/concedido entre hospitais e ficha com assinaturas',
+      icon: RotateCcw,
+      badge: emprestimosAtrasadosCount > 0 ? `${emprestimosAtrasadosCount} pendente(s)` : null,
+      badgeColor: 'bg-rose-500 text-white',
+      allowedRoles: ['admin', 'almoxarife', 'requisitante'],
+    },
+    {
+      id: 'requisicoes',
+      label: 'Requisição',
+      descricao: 'Abertura e acompanhamento de pedidos de insumos dos setores',
+      icon: ClipboardList,
+      badge: null,
+      allowedRoles: ['admin', 'almoxarife', 'requisitante'],
+    },
+    {
+      id: 'aprovacao-requisicoes',
+      label: 'Aprovação de Requisições',
+      descricao: 'Análise pelo almoxarifado, bloqueio de lote vencido e baixa FEFO',
+      icon: CheckSquare,
+      badge: requisicoesPendentesCount > 0 ? `${requisicoesPendentesCount} pendente(s)` : null,
+      badgeColor: 'bg-amber-400 text-slate-900',
       allowedRoles: ['admin', 'almoxarife'],
     },
     {
@@ -73,54 +118,19 @@ export const ModuleGridView: React.FC<ModuleGridViewProps> = ({
       allowedRoles: ['admin', 'almoxarife', 'requisitante'],
     },
     {
-      id: 'produtos',
-      label: 'Produtos / Itens',
-      descricao: 'Catálogo de materiais, medicamentos e equipamentos',
-      icon: Package,
-      badge: itensEstoqueBaixoCount > 0 ? `${itensEstoqueBaixoCount} crítico` : null,
-      badgeColor: 'bg-rose-500',
-      allowedRoles: ['admin', 'almoxarife', 'requisitante'],
-    },
-    {
-      id: 'entradas',
-      label: 'Entrada de Estoque',
-      descricao: 'Recebimento de notas fiscais, fornecedores e lotes',
-      icon: PackagePlus,
+      id: 'usuarios',
+      label: 'Usuário',
+      descricao: 'Consulta, cadastro e permissões de operadores',
+      icon: Users,
       badge: null,
       allowedRoles: ['admin', 'almoxarife'],
-    },
-    {
-      id: 'requisicoes',
-      label: 'Requisição',
-      descricao: 'Abertura e acompanhamento de pedidos de insumos',
-      icon: ClipboardList,
-      badge: null,
-      allowedRoles: ['admin', 'almoxarife', 'requisitante'],
-    },
-    {
-      id: 'aprovacao-requisicoes',
-      label: 'Aprovação de Requisições',
-      descricao: 'Análise clínica, conferência de estoque e baixa automática',
-      icon: CheckSquare,
-      badge: requisicoesPendentesCount > 0 ? `${requisicoesPendentesCount} pendente(s)` : null,
-      badgeColor: 'bg-amber-400 text-slate-900',
-      allowedRoles: ['admin', 'almoxarife'],
-    },
-    {
-      id: 'emprestimos',
-      label: 'Empréstimos',
-      descricao: 'Controle de ferramentas, aparelhos médicos e devoluções',
-      icon: RotateCcw,
-      badge: emprestimosAtrasadosCount > 0 ? `${emprestimosAtrasadosCount} atrasado(s)` : null,
-      badgeColor: 'bg-rose-500 text-white',
-      allowedRoles: ['admin', 'almoxarife', 'requisitante'],
     },
     {
       id: 'relatorios',
-      label: 'Relatórios',
-      descricao: 'Posição de estoque, livro razão, auditoria e indicadores',
+      label: 'Relatórios & Geral PDF',
+      descricao: 'Relatório Geral Impresso/PDF, validade (30/60/90d) e posição de estoque',
       icon: FileBarChart,
-      badge: '11 relatórios',
+      badge: 'Relatório Geral',
       badgeColor: 'bg-teal-500/80 text-white',
       allowedRoles: ['admin', 'almoxarife', 'requisitante'],
     },
@@ -165,53 +175,37 @@ export const ModuleGridView: React.FC<ModuleGridViewProps> = ({
       {/* =========================================================================
           CABEÇALHO SUPERIOR: Identificação, Unidade e Busca
          ========================================================================= */}
-      <header className="w-full px-6 py-4 flex flex-col md:flex-row items-center justify-between gap-4 border-b border-white/10 bg-black/25 backdrop-blur-md">
-        {/* Identificação do Sistema */}
-        <div className="flex items-center gap-3.5 w-full md:w-auto">
-          <div className="w-12 h-12 rounded-xl bg-white p-1 shadow-md border border-white/20 flex items-center justify-center shrink-0">
+      <header className="w-full h-16 px-8 flex items-center justify-between gap-4 border-b border-white/10 bg-black/20 backdrop-blur-md">
+        {/* Identificação do Sistema Minimalista */}
+        <div className="flex items-center gap-3 min-w-0">
+          <div className="w-9 h-9 rounded-lg bg-white p-1 shadow-xs flex items-center justify-center shrink-0">
             <img src="/logo.png" alt="Logo Santa Casa SBC" className="w-full h-full object-contain" />
           </div>
-          <div>
-            <div className="flex items-center gap-2">
-              <span className="text-xl font-black tracking-tight text-white">ALMOXCONTROL</span>
-              <span className="text-[10px] font-bold uppercase tracking-wider bg-[#00237D] text-[#6EC1E4] px-2 py-0.5 rounded-full border border-[#6EC1E4]/30">
-                Gestão & Estoque
-              </span>
-            </div>
-            <p className="text-xs text-blue-200/70 font-medium">Controle Integrado de Almoxarifado</p>
+          <div className="flex items-center gap-2.5 min-w-0">
+            <span className="text-sm font-bold tracking-wide text-white">ALMOXCONTROL</span>
+            <span aria-hidden="true" className="text-white/25 hidden sm:inline">·</span>
+            <span className="text-xs text-blue-200/70 hidden sm:inline truncate">
+              {activeUnidade ? `${activeUnidade.codigo} — ${activeUnidade.nome}` : 'Almoxarifado Central'}
+            </span>
           </div>
         </div>
 
-        {/* Barra de Busca "buscar módulo" no centro */}
-        <div className="w-full md:w-80 relative">
-          <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-blue-300/60">
-            <Search className="w-4 h-4" />
+        {/* Busca Minimalista no Centro */}
+        <div className="w-56 md:w-72 relative">
+          <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-blue-200/50">
+            <Search className="w-3.5 h-3.5" />
           </div>
           <input
             type="text"
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
-            placeholder="buscar módulo..."
-            className="w-full pl-9 pr-4 py-2 bg-white/10 border border-white/20 rounded-full text-xs text-white placeholder-blue-200/50 focus:outline-none focus:bg-white/20 focus:border-[#6EC1E4] transition-all backdrop-blur-sm"
+            placeholder="Filtrar módulos..."
+            className="w-full pl-8 pr-3 py-1.5 bg-white/8 border border-white/12 rounded-lg text-xs text-white placeholder-blue-200/45 focus:outline-none focus:bg-white/15 focus:border-white/30 transition-all"
           />
         </div>
 
-        {/* Canto Superior Direito: Notificações, Usuário Logado e Unidade Ativa */}
-        <div className="flex items-center justify-end gap-4 w-full md:w-auto">
-          <div className="text-right">
-            <div className="flex items-center justify-end gap-2">
-              <span className="text-sm font-semibold text-white tracking-wide">{currentUser.nome}</span>
-              <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded bg-[#00237D] text-[#6EC1E4] border border-[#6EC1E4]/30">
-                {getPerfilLabel(currentUser.perfil)}
-              </span>
-            </div>
-            <div className="flex items-center justify-end gap-1.5 text-xs text-blue-200/80 mt-0.5">
-              <Hospital className="w-3.5 h-3.5 text-[#6EC1E4]" />
-              <span>{activeUnidade ? `${activeUnidade.codigo} - ${activeUnidade.nome}` : 'Almoxarifado Central'}</span>
-            </div>
-          </div>
-
-          {/* Sino de Notificações e Painel de Avisos */}
+        {/* Direita: Notificações, Operador e Sair */}
+        <div className="flex items-center justify-end gap-2">
           <NotificationsDropdown
             produtos={produtos}
             requisicoes={requisicoes}
@@ -220,12 +214,19 @@ export const ModuleGridView: React.FC<ModuleGridViewProps> = ({
             variant="dark"
           />
 
-          {/* Botão Sair */}
+          <div className="h-4 w-px bg-white/15 mx-1" />
+
+          <div className="hidden sm:flex items-center gap-2 text-xs text-white/90 pr-1">
+            <span className="font-medium">{currentUser.nome}</span>
+            <span aria-hidden="true" className="text-white/30">·</span>
+            <span className="text-blue-200/70">{getPerfilLabel(currentUser.perfil)}</span>
+          </div>
+
           <button
             type="button"
             onClick={onLogout}
             title="Encerrar sessão"
-            className="p-2 rounded-lg bg-white/10 hover:bg-rose-500/30 text-white/80 hover:text-white border border-white/15 transition-all cursor-pointer"
+            className="p-2 rounded-lg text-white/70 hover:text-white hover:bg-rose-500/25 transition-all cursor-pointer"
           >
             <LogOut className="w-4 h-4" />
           </button>

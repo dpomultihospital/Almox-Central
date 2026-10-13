@@ -14,6 +14,196 @@ import path from 'node:path';
 export const apiRouter = Router();
 
 // ============================================================================
+// HELPERS DE CONTROLE DE LOTE, VALIDADE (30/60/90 DIAS) E BLOQUEIO POR VENCIMENTO
+// ============================================================================
+
+export function classifyLoteValidade(dataValidade?: string | null): {
+  dias_para_vencer: number | null;
+  status_validade: 'vencido' | 'critico_30d' | 'alerta_60d' | 'atencao_90d' | 'regular' | 'sem_validade';
+} {
+  if (!dataValidade || !String(dataValidade).trim()) {
+    return { dias_para_vencer: null, status_validade: 'sem_validade' };
+  }
+  const hojeStr = new Date().toISOString().slice(0, 10);
+  const dtHoje = new Date(`${hojeStr}T00:00:00`);
+  const dtVal = new Date(`${String(dataValidade).slice(0, 10)}T00:00:00`);
+  if (Number.isNaN(dtVal.getTime())) {
+    return { dias_para_vencer: null, status_validade: 'sem_validade' };
+  }
+  const diffDays = Math.ceil((dtVal.getTime() - dtHoje.getTime()) / (1000 * 60 * 60 * 24));
+  if (diffDays < 0) return { dias_para_vencer: diffDays, status_validade: 'vencido' };
+  if (diffDays <= 30) return { dias_para_vencer: diffDays, status_validade: 'critico_30d' };
+  if (diffDays <= 60) return { dias_para_vencer: diffDays, status_validade: 'alerta_60d' };
+  if (diffDays <= 90) return { dias_para_vencer: diffDays, status_validade: 'atencao_90d' };
+  return { dias_para_vencer: diffDays, status_validade: 'regular' };
+}
+
+export function upsertLoteEstoque(params: {
+  produto_id: number;
+  numero_lote?: string | null;
+  data_validade?: string | null;
+  quantidade: number;
+  fornecedor_id?: number | null;
+  documento_referencia?: string | null;
+  marca?: string | null;
+  nomenclatura_fornecedor?: string | null;
+}): { id: number; numero_lote: string; data_validade: string | null } {
+  const loteNorm = params.numero_lote && String(params.numero_lote).trim()
+    ? String(params.numero_lote).trim().toUpperCase()
+    : 'LOTE-PADRAO';
+  const validadeNorm = params.data_validade && String(params.data_validade).trim()
+    ? String(params.data_validade).trim().slice(0, 10)
+    : null;
+
+  const existente = db.prepare(`
+    SELECT id, numero_lote, data_validade
+    FROM lotes_estoque
+    WHERE produto_id = ?
+      AND UPPER(numero_lote) = ?
+      AND COALESCE(data_validade, '') = COALESCE(?, '')
+    LIMIT 1
+  `).get(params.produto_id, loteNorm, validadeNorm || '') as { id: number; numero_lote: string; data_validade: string | null } | undefined;
+
+  if (existente) {
+    db.prepare(`
+      UPDATE lotes_estoque
+      SET quantidade_atual = quantidade_atual + ?,
+          quantidade_inicial = quantidade_inicial + ?,
+          fornecedor_id = COALESCE(?, fornecedor_id),
+          documento_referencia = COALESCE(?, documento_referencia),
+          marca = COALESCE(?, marca),
+          nomenclatura_fornecedor = COALESCE(?, nomenclatura_fornecedor)
+      WHERE id = ?
+    `).run(
+      params.quantidade,
+      params.quantidade,
+      params.fornecedor_id || null,
+      params.documento_referencia || null,
+      params.marca || null,
+      params.nomenclatura_fornecedor || null,
+      existente.id
+    );
+    return existente;
+  }
+
+  const info = db.prepare(`
+    INSERT INTO lotes_estoque (
+      produto_id, numero_lote, data_validade, quantidade_inicial, quantidade_atual,
+      fornecedor_id, documento_referencia, marca, nomenclatura_fornecedor
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    params.produto_id,
+    loteNorm,
+    validadeNorm,
+    params.quantidade,
+    params.quantidade,
+    params.fornecedor_id || null,
+    params.documento_referencia || null,
+    params.marca || null,
+    params.nomenclatura_fornecedor || null
+  );
+
+  return {
+    id: Number(info.lastInsertRowid),
+    numero_lote: loteNorm,
+    data_validade: validadeNorm,
+  };
+}
+
+/**
+ * Consome saldo de lotes válidos (não vencidos) usando FEFO (First Expired, First Out).
+ * Bloqueia sumariamente caso os lotes disponíveis estejam vencidos!
+ */
+export function consumirLotesValidosFEFO(
+  produtoId: number,
+  qtdNecessaria: number,
+  loteIdEspecifico?: number | null
+): Array<{ lote_id: number; numero_lote: string; data_validade: string | null; quantidade_consumida: number }> {
+  const hojeStr = new Date().toISOString().slice(0, 10);
+  const prod = db.prepare('SELECT id, codigo, nome, unidade_medida FROM produtos WHERE id = ?').get(produtoId) as any;
+  const prodLabel = prod ? `${prod.codigo} - ${prod.nome}` : `Produto #${produtoId}`;
+
+  if (loteIdEspecifico) {
+    const lote = db.prepare('SELECT * FROM lotes_estoque WHERE id = ? AND produto_id = ?').get(loteIdEspecifico, produtoId) as any;
+    if (!lote) {
+      throw new Error(`Lote #${loteIdEspecifico} não encontrado para o produto "${prodLabel}".`);
+    }
+    if (lote.data_validade && String(lote.data_validade).slice(0, 10) < hojeStr) {
+      throw new Error(
+        `BLOQUEIO AUTOMÁTICO DE MOVIMENTAÇÃO POR VENCIMENTO: O lote "${lote.numero_lote}" do produto "${prodLabel}" venceu em ${lote.data_validade}. ` +
+        `Lotes vencidos estão sumariamente bloqueados para requisições de consumo, transferências ou empréstimos. ` +
+        `A única movimentação permitida para lotes vencidos é "Saída por Vencimento/Descarte" em Movimentações Diversas.`
+      );
+    }
+    if (Number(lote.quantidade_atual) < qtdNecessaria) {
+      throw new Error(
+        `Saldo insuficiente no lote "${lote.numero_lote}" (${prodLabel}). Disponível no lote: ${lote.quantidade_atual}, Solicitado: ${qtdNecessaria}.`
+      );
+    }
+    db.prepare('UPDATE lotes_estoque SET quantidade_atual = quantidade_atual - ? WHERE id = ?').run(qtdNecessaria, lote.id);
+    return [{
+      lote_id: lote.id,
+      numero_lote: lote.numero_lote,
+      data_validade: lote.data_validade || null,
+      quantidade_consumida: qtdNecessaria,
+    }];
+  }
+
+  const todosLotesAtivos = db.prepare(`
+    SELECT * FROM lotes_estoque
+    WHERE produto_id = ? AND quantidade_atual > 0
+    ORDER BY CASE WHEN data_validade IS NULL THEN 1 ELSE 0 END ASC, data_validade ASC, id ASC
+  `).all(produtoId) as any[];
+
+  if (todosLotesAtivos.length === 0) {
+    return [];
+  }
+
+  const lotesValidos = todosLotesAtivos.filter(
+    (l) => !l.data_validade || String(l.data_validade).slice(0, 10) >= hojeStr
+  );
+  const lotesVencidos = todosLotesAtivos.filter(
+    (l) => l.data_validade && String(l.data_validade).slice(0, 10) < hojeStr
+  );
+
+  const saldoValido = lotesValidos.reduce((acc, l) => acc + Number(l.quantidade_atual), 0);
+  const saldoVencido = lotesVencidos.reduce((acc, l) => acc + Number(l.quantidade_atual), 0);
+
+  if (saldoValido < qtdNecessaria) {
+    if (saldoVencido > 0) {
+      const listaVenc = lotesVencidos
+        .map((l) => `${l.numero_lote} (Val: ${l.data_validade}, Qtd: ${l.quantidade_atual})`)
+        .join(', ');
+      throw new Error(
+        `BLOQUEIO AUTOMÁTICO DE MOVIMENTAÇÃO POR VENCIMENTO: O produto "${prodLabel}" possui ${saldoVencido} ${prod?.unidade_medida || 'un.'} em lote(s) VENCIDO(S) [${listaVenc}] e apenas ${saldoValido} ${prod?.unidade_medida || 'un.'} em lotes válidos não vencidos (Solicitado: ${qtdNecessaria}). ` +
+        `O sistema bloqueia sumariamente a liberação de lotes vencidos para consumo ou empréstimo. Realize a baixa em "Movimentações Diversas > Saída por Vencimento/Descarte".`
+      );
+    }
+  }
+
+  let restante = qtdNecessaria;
+  const consumidos: Array<{ lote_id: number; numero_lote: string; data_validade: string | null; quantidade_consumida: number }> = [];
+
+  for (const lote of lotesValidos) {
+    if (restante <= 0) break;
+    const disp = Number(lote.quantidade_atual);
+    const abater = Math.min(disp, restante);
+    if (abater > 0) {
+      db.prepare('UPDATE lotes_estoque SET quantidade_atual = quantidade_atual - ? WHERE id = ?').run(abater, lote.id);
+      consumidos.push({
+        lote_id: lote.id,
+        numero_lote: lote.numero_lote,
+        data_validade: lote.data_validade || null,
+        quantidade_consumida: abater,
+      });
+      restante -= abater;
+    }
+  }
+
+  return consumidos;
+}
+
+// ============================================================================
 // 1. EMPRESAS / UNIDADES DE ALMOXARIFADO (PADRÃO SALUTEM)
 // ============================================================================
 
@@ -254,7 +444,8 @@ apiRouter.get('/dashboard/stats', (_req, res) => {
   // 8. Últimas Movimentações (Auditoria recente)
   const ultimasMovimentacoes = db.prepare(`
     SELECT 
-      m.id, m.tipo, m.quantidade, m.documento_referencia, m.observacao, m.data_movimentacao,
+      m.id, m.tipo, m.motivo_diverso, m.quantidade, m.documento_referencia, m.numero_lote, m.data_validade,
+      m.observacao, m.data_movimentacao, m.responsavel_nome,
       p.codigo as produto_codigo, p.nome as produto_nome, p.unidade_medida,
       cc.nome as centro_custo_nome,
       u.nome as usuario_nome
@@ -266,17 +457,73 @@ apiRouter.get('/dashboard/stats', (_req, res) => {
     LIMIT 6
   `).all();
 
+  // 9. Controle de Lotes e Alertas de Validade (Vencidos, 30d, 60d, 90d)
+  const todosLotesComSaldo = db.prepare(`
+    SELECT 
+      le.*,
+      p.codigo as produto_codigo,
+      p.nome as produto_nome,
+      p.unidade_medida,
+      COALESCE(f.nome_fantasia, f.razao_social) as fornecedor_nome
+    FROM lotes_estoque le
+    JOIN produtos p ON le.produto_id = p.id
+    LEFT JOIN fornecedores f ON le.fornecedor_id = f.id
+    WHERE le.quantidade_atual > 0 AND p.ativo = 1 AND le.data_validade IS NOT NULL AND le.data_validade != ''
+    ORDER BY le.data_validade ASC
+  `).all() as any[];
+
+  let lotesVencidosCount = 0;
+  let lotesCritico30dCount = 0;
+  let lotesAlerta60dCount = 0;
+  let lotesAtencao90dCount = 0;
+  const lotesAlertaValidade: any[] = [];
+
+  for (const l of todosLotesComSaldo) {
+    const info = classifyLoteValidade(l.data_validade);
+    const enriched = {
+      ...l,
+      dias_para_vencer: info.dias_para_vencer,
+      status_validade: info.status_validade,
+    };
+    if (info.status_validade === 'vencido') {
+      lotesVencidosCount++;
+      lotesAlertaValidade.push(enriched);
+    } else if (info.status_validade === 'critico_30d') {
+      lotesCritico30dCount++;
+      lotesAlertaValidade.push(enriched);
+    } else if (info.status_validade === 'alerta_60d') {
+      lotesAlerta60dCount++;
+      lotesAlertaValidade.push(enriched);
+    } else if (info.status_validade === 'atencao_90d') {
+      lotesAtencao90dCount++;
+      lotesAlertaValidade.push(enriched);
+    }
+  }
+
+  let empInstPendentes = { count: 0 };
+  try {
+    empInstPendentes = db.prepare(`
+      SELECT COUNT(*) as count FROM emprestimos_institucionais WHERE status = 'pendente_devolucao'
+    `).get() as { count: number };
+  } catch {}
+
   res.json({
     kpis: {
       itens_estoque_baixo: itensEstoqueBaixo.count,
       requisicoes_pendentes: requisicoesPendentes.count,
       emprestimos_ativos: emprestimosAtivos.count,
       emprestimos_atrasados: emprestimosAtrasados.count,
+      emprestimos_institucionais_pendentes: empInstPendentes?.count || 0,
+      lotes_vencidos: lotesVencidosCount,
+      lotes_critico_30d: lotesCritico30dCount,
+      lotes_alerta_60d: lotesAlerta60dCount,
+      lotes_atencao_90d: lotesAtencao90dCount,
       total_produtos: totalProdutos.count,
       total_valor_estoque: valorEstoque.total,
     },
     consumo_centros_custo: consumoCentrosCusto,
     produtos_criticos: produtosCriticos,
+    lotes_alerta_validade: lotesAlertaValidade.slice(0, 20),
     ultimas_movimentacoes: ultimasMovimentacoes,
   });
 });
@@ -689,8 +936,313 @@ apiRouter.delete('/usuarios/:id', (req, res) => {
 });
 
 // ============================================================================
-// 6. CATÁLOGO DE PRODUTOS E ITENS
+// 5.5 CADASTRO DE FORNECEDORES E ENTIDADES PARCEIRAS
 // ============================================================================
+
+apiRouter.get('/fornecedores', (req, res) => {
+  const { busca, apenas_ativos, tipo_entidade } = req.query;
+
+  let query = `
+    SELECT 
+      f.*,
+      (SELECT COUNT(DISTINCT pf.produto_id) FROM produto_fornecedores pf WHERE pf.fornecedor_id = f.id) as total_produtos_vinculados,
+      (SELECT COUNT(*) FROM movimentacoes m WHERE m.fornecedor_id = f.id AND m.tipo = 'entrada') as total_entradas
+    FROM fornecedores f
+    WHERE 1=1
+  `;
+  const params: any[] = [];
+
+  if (apenas_ativos !== 'false') {
+    query += ' AND f.ativo = 1';
+  }
+
+  if (tipo_entidade && (tipo_entidade === 'fornecedor_comercial' || tipo_entidade === 'entidade_parceira')) {
+    query += ' AND f.tipo_entidade = ?';
+    params.push(tipo_entidade);
+  }
+
+  if (busca && typeof busca === 'string' && busca.trim()) {
+    query += ' AND (f.codigo LIKE ? OR f.razao_social LIKE ? OR f.nome_fantasia LIKE ? OR f.cnpj LIKE ?)';
+    const term = `%${busca.trim()}%`;
+    params.push(term, term, term, term);
+  }
+
+  query += ' ORDER BY f.razao_social ASC';
+
+  const rows = db.prepare(query).all(...params);
+  res.json(rows);
+});
+
+apiRouter.post('/fornecedores', (req, res) => {
+  const user = authenticateRequest(req);
+  if (!user || (user.perfil !== 'admin' && user.perfil !== 'almoxarife')) {
+    res.status(403).json({ error: 'Apenas Administradores e Almoxarifes podem cadastrar fornecedores/entidades' });
+    return;
+  }
+
+  const {
+    codigo,
+    razao_social,
+    nome_fantasia,
+    cnpj,
+    tipo_entidade,
+    inscricao_estadual,
+    telefone,
+    email,
+    contato_responsavel,
+    endereco,
+    cidade,
+    uf,
+    observacoes,
+  } = req.body;
+
+  if (!razao_social || !String(razao_social).trim()) {
+    res.status(400).json({ error: 'A Razão Social / Nome da Entidade é obrigatória' });
+    return;
+  }
+
+  const tipoFinal = tipo_entidade === 'entidade_parceira' ? 'entidade_parceira' : 'fornecedor_comercial';
+
+  let codigoFinal = codigo ? String(codigo).trim().toUpperCase() : '';
+  if (!codigoFinal) {
+    const countRow = db.prepare('SELECT COUNT(*) as count FROM fornecedores').get() as { count: number };
+    const prefix = tipoFinal === 'entidade_parceira' ? 'ENT' : 'FORN';
+    codigoFinal = `${prefix}-${String((countRow?.count || 0) + 1).padStart(4, '0')}`;
+  }
+
+  const cnpjFinal = cnpj && String(cnpj).trim() ? String(cnpj).trim() : null;
+
+  try {
+    const info = db.prepare(`
+      INSERT INTO fornecedores (
+        codigo, razao_social, nome_fantasia, cnpj, tipo_entidade, inscricao_estadual,
+        telefone, email, contato_responsavel, endereco, cidade, uf, observacoes, ativo
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+    `).run(
+      codigoFinal,
+      String(razao_social).trim(),
+      nome_fantasia ? String(nome_fantasia).trim() : null,
+      cnpjFinal,
+      tipoFinal,
+      inscricao_estadual ? String(inscricao_estadual).trim() : null,
+      telefone ? String(telefone).trim() : null,
+      email ? String(email).trim() : null,
+      contato_responsavel ? String(contato_responsavel).trim() : null,
+      endereco ? String(endereco).trim() : null,
+      cidade ? String(cidade).trim() : null,
+      uf ? String(uf).trim().toUpperCase() : null,
+      observacoes ? String(observacoes).trim() : null
+    );
+
+    try {
+      db.prepare(`
+        INSERT OR REPLACE INTO fornecedores_entidades (
+          id, codigo, razao_social, nome_fantasia, cnpj, tipo_entidade, inscricao_estadual,
+          telefone, email, contato_responsavel, endereco, cidade, uf, observacoes, ativo
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+      `).run(
+        info.lastInsertRowid,
+        codigoFinal,
+        String(razao_social).trim(),
+        nome_fantasia ? String(nome_fantasia).trim() : null,
+        cnpjFinal,
+        tipoFinal,
+        inscricao_estadual ? String(inscricao_estadual).trim() : null,
+        telefone ? String(telefone).trim() : null,
+        email ? String(email).trim() : null,
+        contato_responsavel ? String(contato_responsavel).trim() : null,
+        endereco ? String(endereco).trim() : null,
+        cidade ? String(cidade).trim() : null,
+        uf ? String(uf).trim().toUpperCase() : null,
+        observacoes ? String(observacoes).trim() : null
+      );
+    } catch {}
+
+    const novo = db.prepare('SELECT * FROM fornecedores WHERE id = ?').get(info.lastInsertRowid);
+    res.status(201).json(novo);
+  } catch (err: any) {
+    if (err.message?.includes('UNIQUE constraint failed')) {
+      res.status(409).json({ error: 'Já existe um fornecedor/entidade cadastrado com este Código ou CNPJ/CPF' });
+      return;
+    }
+    res.status(500).json({ error: 'Erro ao cadastrar fornecedor/entidade: ' + err.message });
+  }
+});
+
+apiRouter.put('/fornecedores/:id', (req, res) => {
+  const user = authenticateRequest(req);
+  if (!user || (user.perfil !== 'admin' && user.perfil !== 'almoxarife')) {
+    res.status(403).json({ error: 'Apenas Administradores e Almoxarifes podem editar fornecedores/entidades' });
+    return;
+  }
+
+  const { id } = req.params;
+  const {
+    codigo,
+    razao_social,
+    nome_fantasia,
+    cnpj,
+    tipo_entidade,
+    inscricao_estadual,
+    telefone,
+    email,
+    contato_responsavel,
+    endereco,
+    cidade,
+    uf,
+    observacoes,
+    ativo,
+  } = req.body;
+
+  if (!codigo || !razao_social) {
+    res.status(400).json({ error: 'Código e Razão Social / Nome são obrigatórios' });
+    return;
+  }
+
+  const tipoFinal = tipo_entidade === 'entidade_parceira' ? 'entidade_parceira' : 'fornecedor_comercial';
+
+  try {
+    db.prepare(`
+      UPDATE fornecedores
+      SET codigo = ?, razao_social = ?, nome_fantasia = ?, cnpj = ?, tipo_entidade = ?, inscricao_estadual = ?,
+          telefone = ?, email = ?, contato_responsavel = ?, endereco = ?, cidade = ?, uf = ?,
+          observacoes = ?, ativo = ?
+      WHERE id = ?
+    `).run(
+      String(codigo).trim().toUpperCase(),
+      String(razao_social).trim(),
+      nome_fantasia ? String(nome_fantasia).trim() : null,
+      cnpj && String(cnpj).trim() ? String(cnpj).trim() : null,
+      tipoFinal,
+      inscricao_estadual ? String(inscricao_estadual).trim() : null,
+      telefone ? String(telefone).trim() : null,
+      email ? String(email).trim() : null,
+      contato_responsavel ? String(contato_responsavel).trim() : null,
+      endereco ? String(endereco).trim() : null,
+      cidade ? String(cidade).trim() : null,
+      uf ? String(uf).trim().toUpperCase() : null,
+      observacoes ? String(observacoes).trim() : null,
+      ativo ?? 1,
+      id
+    );
+
+    try {
+      db.prepare(`
+        INSERT OR REPLACE INTO fornecedores_entidades (
+          id, codigo, razao_social, nome_fantasia, cnpj, tipo_entidade, inscricao_estadual,
+          telefone, email, contato_responsavel, endereco, cidade, uf, observacoes, ativo
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        Number(id),
+        String(codigo).trim().toUpperCase(),
+        String(razao_social).trim(),
+        nome_fantasia ? String(nome_fantasia).trim() : null,
+        cnpj && String(cnpj).trim() ? String(cnpj).trim() : null,
+        tipoFinal,
+        inscricao_estadual ? String(inscricao_estadual).trim() : null,
+        telefone ? String(telefone).trim() : null,
+        email ? String(email).trim() : null,
+        contato_responsavel ? String(contato_responsavel).trim() : null,
+        endereco ? String(endereco).trim() : null,
+        cidade ? String(cidade).trim() : null,
+        uf ? String(uf).trim().toUpperCase() : null,
+        observacoes ? String(observacoes).trim() : null,
+        ativo ?? 1
+      );
+    } catch {}
+
+    const atualizado = db.prepare('SELECT * FROM fornecedores WHERE id = ?').get(id);
+    res.json(atualizado);
+  } catch (err: any) {
+    if (err.message?.includes('UNIQUE constraint failed')) {
+      res.status(409).json({ error: 'Já existe outro fornecedor/entidade com este Código ou CNPJ/CPF' });
+      return;
+    }
+    res.status(500).json({ error: 'Erro ao atualizar fornecedor/entidade: ' + err.message });
+  }
+});
+
+apiRouter.delete('/fornecedores/:id', (req, res) => {
+  const user = authenticateRequest(req);
+  if (!user || (user.perfil !== 'admin' && user.perfil !== 'almoxarife')) {
+    res.status(403).json({ error: 'Apenas Administradores e Almoxarifes podem excluir fornecedores/entidades' });
+    return;
+  }
+
+  const { id } = req.params;
+  const forn = db.prepare('SELECT * FROM fornecedores WHERE id = ?').get(id) as any;
+  if (!forn) {
+    res.status(404).json({ error: 'Fornecedor/Entidade não encontrado' });
+    return;
+  }
+
+  try {
+    runInTransaction(() => {
+      db.prepare('UPDATE movimentacoes SET fornecedor_id = NULL WHERE fornecedor_id = ?').run(id);
+      db.prepare('UPDATE lotes_estoque SET fornecedor_id = NULL WHERE fornecedor_id = ?').run(id);
+      db.prepare('DELETE FROM produto_fornecedores WHERE fornecedor_id = ?').run(id);
+      db.prepare('DELETE FROM fornecedores_entidades WHERE id = ?').run(id);
+      db.prepare('DELETE FROM fornecedores WHERE id = ?').run(id);
+    });
+
+    res.json({
+      id: Number(id),
+      message: `Cadastro "${forn.codigo} - ${forn.razao_social}" excluído com sucesso.`,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Erro ao excluir fornecedor/entidade: ' + err.message });
+  }
+});
+
+// ============================================================================
+// 6. CATÁLOGO DE PRODUTOS E LOTES (CÓDIGO ÚNICO DE ESTOQUE)
+// ============================================================================
+
+apiRouter.get('/lotes', (req, res) => {
+  const { produto_id, apenas_com_saldo, filtro_validade } = req.query;
+
+  let sql = `
+    SELECT 
+      le.*,
+      p.codigo as produto_codigo,
+      p.nome as produto_nome,
+      p.unidade_medida,
+      COALESCE(f.nome_fantasia, f.razao_social) as fornecedor_nome
+    FROM lotes_estoque le
+    JOIN produtos p ON le.produto_id = p.id
+    LEFT JOIN fornecedores f ON le.fornecedor_id = f.id
+    WHERE 1=1
+  `;
+  const params: any[] = [];
+
+  if (apenas_com_saldo !== 'false') {
+    sql += ' AND le.quantidade_atual > 0';
+  }
+
+  if (produto_id) {
+    sql += ' AND le.produto_id = ?';
+    params.push(Number(produto_id));
+  }
+
+  sql += ' ORDER BY CASE WHEN le.data_validade IS NULL THEN 1 ELSE 0 END ASC, le.data_validade ASC, le.id ASC';
+
+  const rows = db.prepare(sql).all(...params) as any[];
+  const enriched = rows
+    .map((l) => {
+      const info = classifyLoteValidade(l.data_validade);
+      return {
+        ...l,
+        dias_para_vencer: info.dias_para_vencer,
+        status_validade: info.status_validade,
+      };
+    })
+    .filter((l) => {
+      if (!filtro_validade || filtro_validade === 'todos') return true;
+      return l.status_validade === filtro_validade;
+    });
+
+  res.json(enriched);
+});
 
 apiRouter.get('/produtos', (req, res) => {
   const { tipo, busca, estoque_baixo, apenas_ativos } = req.query;
@@ -719,8 +1271,145 @@ apiRouter.get('/produtos', (req, res) => {
 
   query += ' ORDER BY nome ASC';
 
-  const rows = db.prepare(query).all(...params);
+  const rows = db.prepare(query).all(...params) as any[];
+
+  // Anexa fornecedores, marcas e lotes de estoque vinculados a cada código de produto
+  try {
+    const vinculos = db.prepare(`
+      SELECT 
+        pf.*,
+        f.codigo as fornecedor_codigo,
+        f.razao_social as fornecedor_razao_social,
+        f.nome_fantasia as fornecedor_nome_fantasia,
+        f.cnpj as fornecedor_cnpj
+      FROM produto_fornecedores pf
+      JOIN fornecedores f ON pf.fornecedor_id = f.id
+      ORDER BY pf.ultima_compra DESC, pf.id DESC
+    `).all() as any[];
+
+    const mapByProd = new Map<number, any[]>();
+    for (const v of vinculos) {
+      const list = mapByProd.get(v.produto_id) || [];
+      list.push(v);
+      mapByProd.set(v.produto_id, list);
+    }
+
+    const lotesRows = db.prepare(`
+      SELECT 
+        le.*,
+        COALESCE(f.nome_fantasia, f.razao_social) as fornecedor_nome
+      FROM lotes_estoque le
+      LEFT JOIN fornecedores f ON le.fornecedor_id = f.id
+      WHERE le.quantidade_atual > 0
+      ORDER BY CASE WHEN le.data_validade IS NULL THEN 1 ELSE 0 END ASC, le.data_validade ASC, le.id ASC
+    `).all() as any[];
+
+    const lotesByProd = new Map<number, any[]>();
+    for (const l of lotesRows) {
+      const info = classifyLoteValidade(l.data_validade);
+      const list = lotesByProd.get(l.produto_id) || [];
+      list.push({
+        ...l,
+        dias_para_vencer: info.dias_para_vencer,
+        status_validade: info.status_validade,
+      });
+      lotesByProd.set(l.produto_id, list);
+    }
+
+    for (const r of rows) {
+      r.fornecedores_vinculados = mapByProd.get(r.id) || [];
+      const prodLotes = lotesByProd.get(r.id) || [];
+      r.lotes = prodLotes;
+      const qtdBloqueadaVencida = prodLotes
+        .filter((l: any) => l.status_validade === 'vencido')
+        .reduce((acc: number, l: any) => acc + Number(l.quantidade_atual), 0);
+      r.quantidade_bloqueada_vencida = qtdBloqueadaVencida;
+      r.quantidade_disponivel_valida = Math.max(0, Number(r.quantidade_atual) - qtdBloqueadaVencida);
+    }
+  } catch {
+    for (const r of rows) {
+      r.fornecedores_vinculados = [];
+      r.lotes = [];
+      r.quantidade_bloqueada_vencida = 0;
+      r.quantidade_disponivel_valida = Number(r.quantidade_atual);
+    }
+  }
+
   res.json(rows);
+});
+
+apiRouter.post('/produtos/:id/fornecedores', (req, res) => {
+  const user = authenticateRequest(req);
+  if (!user || (user.perfil !== 'admin' && user.perfil !== 'almoxarife')) {
+    res.status(403).json({ error: 'Apenas Administradores e Almoxarifes podem vincular fornecedores a produtos' });
+    return;
+  }
+
+  const { id } = req.params;
+  const { fornecedor_id, marca, nomenclatura_fornecedor, codigo_referencia_fornecedor, ultimo_valor_unitario } = req.body;
+
+  if (!fornecedor_id) {
+    res.status(400).json({ error: 'Selecione um fornecedor cadastrado para vincular a este código de produto' });
+    return;
+  }
+
+  try {
+    const prod = db.prepare('SELECT id, codigo, nome FROM produtos WHERE id = ?').get(id) as any;
+    if (!prod) {
+      res.status(404).json({ error: 'Produto não encontrado no catálogo' });
+      return;
+    }
+
+    const forn = db.prepare('SELECT id, razao_social FROM fornecedores WHERE id = ?').get(fornecedor_id) as any;
+    if (!forn) {
+      res.status(404).json({ error: 'Fornecedor não encontrado' });
+      return;
+    }
+
+    const info = db.prepare(`
+      INSERT INTO produto_fornecedores (
+        produto_id, fornecedor_id, marca, nomenclatura_fornecedor, codigo_referencia_fornecedor, ultimo_valor_unitario
+      ) VALUES (?, ?, ?, ?, ?, ?)
+    `).run(
+      Number(id),
+      Number(fornecedor_id),
+      marca ? String(marca).trim() : null,
+      nomenclatura_fornecedor ? String(nomenclatura_fornecedor).trim() : null,
+      codigo_referencia_fornecedor ? String(codigo_referencia_fornecedor).trim().toUpperCase() : null,
+      ultimo_valor_unitario ? Number(ultimo_valor_unitario) : null
+    );
+
+    const criado = db.prepare(`
+      SELECT 
+        pf.*,
+        f.codigo as fornecedor_codigo,
+        f.razao_social as fornecedor_razao_social,
+        f.nome_fantasia as fornecedor_nome_fantasia,
+        f.cnpj as fornecedor_cnpj
+      FROM produto_fornecedores pf
+      JOIN fornecedores f ON pf.fornecedor_id = f.id
+      WHERE pf.id = ?
+    `).get(info.lastInsertRowid);
+
+    res.status(201).json({
+      message: `Fornecedor "${forn.razao_social}" vinculado ao código único de estoque "${prod.codigo}".`,
+      data: criado,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Erro ao vincular fornecedor ao produto: ' + err.message });
+  }
+});
+
+apiRouter.delete('/produtos/:id/fornecedores/:vinculoId', (req, res) => {
+  const user = authenticateRequest(req);
+  if (!user || (user.perfil !== 'admin' && user.perfil !== 'almoxarife')) {
+    res.status(403).json({ error: 'Sem permissão' });
+    return;
+  }
+
+  const { id, vinculoId } = req.params;
+  db.prepare('DELETE FROM produto_fornecedores WHERE id = ? AND produto_id = ?').run(vinculoId, id);
+  res.json({ message: 'Vínculo de fornecedor/marca removido com sucesso.' });
 });
 
 apiRouter.post('/produtos', (req, res) => {
@@ -730,16 +1419,16 @@ apiRouter.post('/produtos', (req, res) => {
     return;
   }
 
-  const { codigo, nome, descricao, unidade_medida, tipo, estoque_minimo, estoque_maximo, valor_unitario, localizacao } = req.body;
+  const { codigo, nome, descricao, unidade_medida, tipo, controla_validade, estoque_minimo, estoque_maximo, valor_unitario, localizacao } = req.body;
   if (!codigo || !nome || !unidade_medida || !tipo) {
-    res.status(400).json({ error: 'Código, nome, unidade de medida e tipo são obrigatórios' });
+    res.status(400).json({ error: 'Código único interno, descrição padrão, unidade de medida e tipo são obrigatórios' });
     return;
   }
 
   try {
     const stmt = db.prepare(`
-      INSERT INTO produtos (codigo, nome, descricao, unidade_medida, tipo, estoque_minimo, estoque_maximo, quantidade_atual, valor_unitario, localizacao, ativo)
-      VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, 1)
+      INSERT INTO produtos (codigo, nome, descricao, unidade_medida, tipo, controla_validade, estoque_minimo, estoque_maximo, quantidade_atual, valor_unitario, localizacao, ativo)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, 1)
     `);
     const info = stmt.run(
       codigo.trim().toUpperCase(),
@@ -747,6 +1436,7 @@ apiRouter.post('/produtos', (req, res) => {
       descricao ? descricao.trim() : null,
       unidade_medida.trim().toUpperCase(),
       tipo,
+      controla_validade === 0 || controla_validade === false ? 0 : 1,
       Number(estoque_minimo) || 0,
       Number(estoque_maximo) || 0,
       valor_unitario ? Number(valor_unitario) : 0,
@@ -756,7 +1446,7 @@ apiRouter.post('/produtos', (req, res) => {
     res.status(201).json(novo);
   } catch (err: any) {
     if (err.message?.includes('UNIQUE constraint failed')) {
-      res.status(409).json({ error: 'Já existe um produto com este código de catálogo' });
+      res.status(409).json({ error: 'Já existe um produto com este código único de catálogo' });
       return;
     }
     res.status(500).json({ error: 'Erro ao cadastrar produto: ' + err.message });
@@ -771,12 +1461,12 @@ apiRouter.put('/produtos/:id', (req, res) => {
   }
 
   const { id } = req.params;
-  const { codigo, nome, descricao, unidade_medida, tipo, estoque_minimo, estoque_maximo, valor_unitario, localizacao, ativo } = req.body;
+  const { codigo, nome, descricao, unidade_medida, tipo, controla_validade, estoque_minimo, estoque_maximo, valor_unitario, localizacao, ativo } = req.body;
 
   try {
     db.prepare(`
       UPDATE produtos
-      SET codigo = ?, nome = ?, descricao = ?, unidade_medida = ?, tipo = ?, 
+      SET codigo = ?, nome = ?, descricao = ?, unidade_medida = ?, tipo = ?, controla_validade = ?,
           estoque_minimo = ?, estoque_maximo = ?, valor_unitario = ?, localizacao = ?, ativo = ?
       WHERE id = ?
     `).run(
@@ -785,6 +1475,7 @@ apiRouter.put('/produtos/:id', (req, res) => {
       descricao ? descricao.trim() : null,
       unidade_medida.trim().toUpperCase(),
       tipo,
+      controla_validade === 0 || controla_validade === false ? 0 : 1,
       Number(estoque_minimo) || 0,
       Number(estoque_maximo) || 0,
       valor_unitario !== undefined ? Number(valor_unitario) : 0,
@@ -828,8 +1519,11 @@ apiRouter.delete('/produtos/:id', (req, res) => {
     runInTransaction(() => {
       db.prepare('DELETE FROM historico_requisicoes WHERE produto_id = ?').run(id);
       db.prepare('DELETE FROM itens_requisicao WHERE produto_id = ?').run(id);
+      db.prepare('DELETE FROM itens_emprestimo_institucional WHERE produto_id = ?').run(id);
       db.prepare('DELETE FROM movimentacoes WHERE produto_id = ?').run(id);
+      db.prepare('DELETE FROM lotes_estoque WHERE produto_id = ?').run(id);
       db.prepare('DELETE FROM emprestimos WHERE produto_id = ?').run(id);
+      db.prepare('DELETE FROM produto_fornecedores WHERE produto_id = ?').run(id);
       db.prepare('DELETE FROM produtos WHERE id = ?').run(id);
     });
 
@@ -843,7 +1537,7 @@ apiRouter.delete('/produtos/:id', (req, res) => {
 });
 
 // ============================================================================
-// 7. ENTRADA DE NOTA FISCAL / ESTOQUE
+// 7. ENTRADA DE NOTA FISCAL / ESTOQUE (COM FORNECEDOR, LOTE/VALIDADE E CÓDIGO ÚNICO DE PRODUTO)
 // ============================================================================
 
 apiRouter.post('/entradas', (req, res) => {
@@ -853,68 +1547,205 @@ apiRouter.post('/entradas', (req, res) => {
     return;
   }
 
-  const { produto_id, quantidade, documento_referencia, numero_lote, data_validade, valor_unitario, observacao, fornecedor } = req.body;
+  const {
+    produto_id,
+    quantidade,
+    documento_referencia,
+    numero_lote,
+    data_validade,
+    valor_unitario,
+    observacao,
+    fornecedor_id,
+    fornecedor,
+    marca,
+    nomenclatura_fornecedor,
+    codigo_referencia_fornecedor,
+    itens,
+  } = req.body;
 
-  const qtd = Number(quantidade);
-  if (!produto_id || !qtd || qtd <= 0) {
-    res.status(400).json({ error: 'Produto e quantidade válida positiva são obrigatórios' });
-    return;
-  }
-
-  if (!documento_referencia || !documento_referencia.trim()) {
+  if (!documento_referencia || !String(documento_referencia).trim()) {
     res.status(400).json({ error: 'O número do documento fiscal / NF de entrada é obrigatório para conformidade' });
     return;
   }
 
+  // Suporta lista de itens da Nota Fiscal ou lançamento de item único
+  const listaItens: Array<{
+    produto_id: number;
+    quantidade: number;
+    numero_lote?: string | null;
+    data_validade?: string | null;
+    valor_unitario?: number | null;
+    marca?: string | null;
+    nomenclatura_fornecedor?: string | null;
+    codigo_referencia_fornecedor?: string | null;
+  }> = Array.isArray(itens) && itens.length > 0
+    ? itens
+    : [
+        {
+          produto_id: Number(produto_id),
+          quantidade: Number(quantidade),
+          numero_lote,
+          data_validade,
+          valor_unitario,
+          marca,
+          nomenclatura_fornecedor,
+          codigo_referencia_fornecedor,
+        },
+      ];
+
+  for (const item of listaItens) {
+    const qtd = Number(item.quantidade);
+    if (!item.produto_id || !qtd || qtd <= 0) {
+      res.status(400).json({ error: 'Produto cadastrado e quantidade válida positiva são obrigatórios em todos os itens da NF' });
+      return;
+    }
+  }
+
   try {
     const result = runInTransaction(() => {
-      // 1. Verifica produto
-      const prod = db.prepare('SELECT id, nome, quantidade_atual FROM produtos WHERE id = ? AND ativo = 1').get(produto_id) as any;
-      if (!prod) {
-        throw new Error('Produto não encontrado ou inativo');
+      let fornRow: any = null;
+      if (fornecedor_id) {
+        fornRow = db.prepare('SELECT * FROM fornecedores WHERE id = ?').get(Number(fornecedor_id)) as any;
+        if (!fornRow) {
+          throw new Error('Fornecedor/Entidade selecionado não foi encontrado no cadastro.');
+        }
       }
 
-      // 2. Atualiza saldo de forma atômica
-      db.prepare(`
-        UPDATE produtos 
-        SET quantidade_atual = quantidade_atual + ? 
-        WHERE id = ?
-      `).run(qtd, produto_id);
+      const nomeFornecedorLabel = fornRow
+        ? `${fornRow.codigo} - ${fornRow.nome_fantasia || fornRow.razao_social}${fornRow.cnpj ? ` (CNPJ: ${fornRow.cnpj})` : ''}`
+        : fornecedor
+        ? String(fornecedor).trim()
+        : null;
 
-      // Atualiza também valor_unitario se fornecido
-      if (valor_unitario && Number(valor_unitario) > 0) {
-        db.prepare('UPDATE produtos SET valor_unitario = ? WHERE id = ?').run(Number(valor_unitario), produto_id);
-      }
-
-      // 3. Registra movimentação no livro-caixa auditável
-      const obsFinal = fornecedor 
-        ? `Fornecedor: ${fornecedor.trim()} | ${observacao ? observacao.trim() : 'Entrada de material por NF/Doc'}`
-        : (observacao ? observacao.trim() : 'Entrada de material por NF/Doc');
+      const docRefUpper = String(documento_referencia).trim().toUpperCase();
+      const movsCriadas: number[] = [];
+      const produtosAtualizados: any[] = [];
 
       const movStmt = db.prepare(`
-        INSERT INTO movimentacoes (tipo, produto_id, quantidade, centro_custo_id, usuario_id, documento_referencia, numero_lote, data_validade, valor_unitario, observacao)
-        VALUES ('entrada', ?, ?, NULL, ?, ?, ?, ?, ?, ?)
+        INSERT INTO movimentacoes (
+          tipo, motivo_diverso, produto_id, lote_id, quantidade, centro_custo_id, fornecedor_id, usuario_id,
+          responsavel_nome, documento_referencia, numero_lote, data_validade, valor_unitario,
+          marca, nomenclatura_fornecedor, observacao
+        )
+        VALUES ('entrada', 'Entrada por Nota Fiscal', ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
-      const movInfo = movStmt.run(
-        produto_id,
-        qtd,
-        user.id,
-        documento_referencia.trim().toUpperCase(),
-        numero_lote ? numero_lote.trim().toUpperCase() : null,
-        data_validade || null,
-        valor_unitario ? Number(valor_unitario) : null,
-        obsFinal
-      );
 
-      const produtoAtualizado = db.prepare('SELECT * FROM produtos WHERE id = ?').get(produto_id);
+      for (const item of listaItens) {
+        const prodId = Number(item.produto_id);
+        const qtd = Number(item.quantidade);
+        const valUnit = item.valor_unitario !== undefined && item.valor_unitario !== null ? Number(item.valor_unitario) : null;
+        const itemMarca = item.marca ? String(item.marca).trim() : null;
+        const itemNomenclatura = item.nomenclatura_fornecedor ? String(item.nomenclatura_fornecedor).trim() : null;
+        const itemCodRef = item.codigo_referencia_fornecedor ? String(item.codigo_referencia_fornecedor).trim().toUpperCase() : null;
+        const itemLote = item.numero_lote ? String(item.numero_lote).trim().toUpperCase() : null;
+        const itemValidade = item.data_validade ? String(item.data_validade).trim().slice(0, 10) : null;
+
+        // 1. Verifica produto no catálogo (mantém SEMPRE o mesmo código único de estoque)
+        const prod = db.prepare('SELECT id, codigo, nome, tipo, controla_validade, quantidade_atual FROM produtos WHERE id = ? AND ativo = 1').get(prodId) as any;
+        if (!prod) {
+          throw new Error(`Produto #${prodId} não encontrado ou inativo no catálogo`);
+        }
+
+        // Valida obrigatoriedade de Lote e Data de Validade para itens perecíveis/médicos/hospitalares
+        const exigeLoteValidade = prod.controla_validade === undefined ? prod.tipo === 'consumivel' : prod.controla_validade === 1;
+        if (exigeLoteValidade && (!itemLote || !itemValidade)) {
+          throw new Error(
+            `O item "${prod.codigo} - ${prod.nome}" exige controle de Lote e Data de Validade obrigatórios na entrada.`
+          );
+        }
+
+        // 2. Registra/atualiza Lote em lotes_estoque vinculado ao código único do produto
+        const loteReg = upsertLoteEstoque({
+          produto_id: prodId,
+          numero_lote: itemLote || `LT-${docRefUpper}`,
+          data_validade: itemValidade,
+          quantidade: qtd,
+          fornecedor_id: fornRow ? fornRow.id : null,
+          documento_referencia: docRefUpper,
+          marca: itemMarca,
+          nomenclatura_fornecedor: itemNomenclatura,
+        });
+
+        // 3. Soma saldo no mesmo código único de produto no estoque, independente de marca ou nomenclatura na NF
+        db.prepare(`
+          UPDATE produtos 
+          SET quantidade_atual = quantidade_atual + ? 
+          WHERE id = ?
+        `).run(qtd, prodId);
+
+        if (valUnit && valUnit > 0) {
+          db.prepare('UPDATE produtos SET valor_unitario = ? WHERE id = ?').run(valUnit, prodId);
+        }
+
+        // 4. Se houver fornecedor_id cadastrado, registra/atualiza equivalência em produto_fornecedores
+        if (fornRow) {
+          const existingLink = db.prepare(`
+            SELECT id FROM produto_fornecedores
+            WHERE produto_id = ? AND fornecedor_id = ?
+              AND COALESCE(LOWER(marca), '') = COALESCE(LOWER(?), '')
+              AND COALESCE(LOWER(nomenclatura_fornecedor), '') = COALESCE(LOWER(?), '')
+          `).get(prodId, fornRow.id, itemMarca || '', itemNomenclatura || '') as { id: number } | undefined;
+
+          if (existingLink) {
+            db.prepare(`
+              UPDATE produto_fornecedores
+              SET ultimo_valor_unitario = COALESCE(?, ultimo_valor_unitario),
+                  codigo_referencia_fornecedor = COALESCE(?, codigo_referencia_fornecedor),
+                  ultima_compra = CURRENT_TIMESTAMP
+              WHERE id = ?
+            `).run(valUnit, itemCodRef, existingLink.id);
+          } else {
+            db.prepare(`
+              INSERT INTO produto_fornecedores (
+                produto_id, fornecedor_id, marca, nomenclatura_fornecedor,
+                codigo_referencia_fornecedor, ultimo_valor_unitario, ultima_compra
+              ) VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            `).run(prodId, fornRow.id, itemMarca, itemNomenclatura, itemCodRef, valUnit);
+          }
+        }
+
+        // 5. Monta observação rastreável com Fornecedor, Marca, Nomenclatura da NF e Lote/Validade
+        const partesObs: string[] = [];
+        if (nomeFornecedorLabel) partesObs.push(`Fornecedor: ${nomeFornecedorLabel}`);
+        if (itemMarca) partesObs.push(`Marca/Nome NF: ${itemMarca}`);
+        if (itemNomenclatura) partesObs.push(`Desc. na NF: "${itemNomenclatura}"`);
+        if (itemCodRef) partesObs.push(`Ref. Forn: ${itemCodRef}`);
+        if (loteReg.numero_lote) partesObs.push(`Lote: ${loteReg.numero_lote}`);
+        if (loteReg.data_validade) partesObs.push(`Val: ${loteReg.data_validade}`);
+        if (observacao && String(observacao).trim()) partesObs.push(String(observacao).trim());
+        const obsFinal = partesObs.length > 0 ? partesObs.join(' | ') : 'Entrada de material por NF/Doc';
+
+        const movInfo = movStmt.run(
+          prodId,
+          loteReg.id,
+          qtd,
+          fornRow ? fornRow.id : null,
+          user.id,
+          user.nome,
+          docRefUpper,
+          loteReg.numero_lote,
+          loteReg.data_validade,
+          valUnit,
+          itemMarca,
+          itemNomenclatura,
+          obsFinal
+        );
+
+        movsCriadas.push(Number(movInfo.lastInsertRowid));
+        const produtoAtualizado = db.prepare('SELECT * FROM produtos WHERE id = ?').get(prodId);
+        produtosAtualizados.push(produtoAtualizado);
+      }
+
       return {
-        movimentacao_id: movInfo.lastInsertRowid,
-        produto: produtoAtualizado,
+        movimentacao_id: movsCriadas[0],
+        movimentacoes_ids: movsCriadas,
+        produto: produtosAtualizados[0],
+        produtos: produtosAtualizados,
       };
     });
 
     res.status(201).json({
-      message: 'Entrada registrada com sucesso no estoque',
+      message: 'Entrada por Nota Fiscal registrada com sucesso no código único de estoque e lote atualizado',
       data: result,
     });
   } catch (err: any) {
@@ -1088,7 +1919,12 @@ apiRouter.post('/requisicoes', (req, res) => {
 
   try {
     const result = runInTransaction(() => {
-      // 1. Cria cabeçalho da requisição (status = 'pendente')
+      // 1. Cria cabeçalho da requisição (status = 'pendente', prioridade inicial 'normal' definida pelo almoxarifado)
+      const prioridadeInicial =
+        (user.perfil === 'admin' || user.perfil === 'almoxarife') && prioridade === 'urgente'
+          ? 'urgente'
+          : 'normal';
+
       const reqStmt = db.prepare(`
         INSERT INTO requisicoes (numero_requisicao, centro_custo_id, solicitante_id, prioridade, status, observacao)
         VALUES (?, ?, ?, ?, 'pendente', ?)
@@ -1097,10 +1933,16 @@ apiRouter.post('/requisicoes', (req, res) => {
         numero_requisicao,
         finalCcId,
         user.id,
-        prioridade === 'urgente' ? 'urgente' : 'normal',
+        prioridadeInicial,
         observacao ? observacao.trim() : null
       );
       const requisicaoId = reqInfo.lastInsertRowid;
+
+      const horaAtual = new Date().getHours();
+      const regraEntregaTexto =
+        horaAtual < 12
+          ? 'Solicitada até as 12h: Entrega prevista no mesmo dia à tarde (após as 13h).'
+          : 'Solicitada após as 12h: Entrega prevista para o dia seguinte (após as 13h).';
 
       // Registra abertura no histórico de auditoria da requisição
       const histStmt = db.prepare(`
@@ -1121,7 +1963,7 @@ apiRouter.post('/requisicoes', (req, res) => {
         'pendente',
         null,
         null,
-        `Requisição ${numero_requisicao} aberta por ${user.nome} (${user.perfil.toUpperCase()}) com prioridade ${(prioridade === 'urgente' ? 'URGENTE' : 'NORMAL')} contendo ${itens.length} item(ns).`,
+        `Requisição ${numero_requisicao} aberta por ${user.nome} (${user.perfil.toUpperCase()}) contendo ${itens.length} item(ns). ${regraEntregaTexto}`,
         observacao ? observacao.trim() : null
       );
 
@@ -1178,6 +2020,61 @@ apiRouter.post('/requisicoes', (req, res) => {
   }
 });
 
+apiRouter.patch('/requisicoes/:id/prioridade', (req, res) => {
+  const user = authenticateRequest(req);
+  if (!user || (user.perfil !== 'admin' && user.perfil !== 'almoxarife')) {
+    res.status(403).json({ error: 'Apenas o Almoxarifado (Almoxarife ou Administrador) pode definir a prioridade da requisição' });
+    return;
+  }
+
+  const { id } = req.params;
+  const { prioridade, justificativa } = req.body || {};
+
+  if (prioridade !== 'normal' && prioridade !== 'urgente') {
+    res.status(400).json({ error: 'Prioridade inválida. Valores permitidos: "normal" ou "urgente".' });
+    return;
+  }
+
+  try {
+    const reqRow = db.prepare('SELECT * FROM requisicoes WHERE id = ?').get(id) as any;
+    if (!reqRow) {
+      res.status(404).json({ error: 'Requisição não encontrada' });
+      return;
+    }
+
+    const prioridadeAnterior = reqRow.prioridade || 'normal';
+
+    runInTransaction(() => {
+      db.prepare('UPDATE requisicoes SET prioridade = ? WHERE id = ?').run(prioridade, id);
+
+      if (prioridadeAnterior !== prioridade) {
+        db.prepare(`
+          INSERT INTO historico_requisicoes (
+            requisicao_id, item_requisicao_id, produto_id, usuario_id, acao,
+            status_anterior, status_novo, quantidade_solicitada, quantidade_atendida,
+            detalhes, justificativa
+          ) VALUES (?, NULL, NULL, ?, 'alteracao_prioridade', ?, ?, NULL, NULL, ?, ?)
+        `).run(
+          id,
+          user.id,
+          prioridadeAnterior,
+          prioridade,
+          `Prioridade da requisição alterada pelo Almoxarifado (${user.nome}) de ${prioridadeAnterior.toUpperCase()} para ${prioridade.toUpperCase()}.`,
+          justificativa ? String(justificativa).trim() : 'Classificação de prioridade operacional definida pelo Almoxarifado.'
+        );
+      }
+    });
+
+    res.json({
+      message: `Prioridade definida como ${prioridade === 'urgente' ? 'URGENTE' : 'NORMAL'} pelo Almoxarifado.`,
+      id: Number(id),
+      prioridade,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Erro ao atualizar prioridade: ' + err.message });
+  }
+});
+
 apiRouter.post('/requisicoes/:id/aprovar', (req, res) => {
   const user = authenticateRequest(req);
   if (!user || (user.perfil !== 'admin' && user.perfil !== 'almoxarife')) {
@@ -1186,7 +2083,7 @@ apiRouter.post('/requisicoes/:id/aprovar', (req, res) => {
   }
 
   const { id } = req.params;
-  const { decisoes_itens, observacao_atendimento } = req.body || {};
+  const { decisoes_itens, observacao_atendimento, prioridade } = req.body || {};
 
   try {
     const result = runInTransaction(() => {
@@ -1196,6 +2093,10 @@ apiRouter.post('/requisicoes/:id/aprovar', (req, res) => {
       }
       if (reqRow.status !== 'pendente') {
         throw new Error(`Esta requisição não pode ser analisada pois seu status atual é "${reqRow.status}"`);
+      }
+
+      if (prioridade === 'normal' || prioridade === 'urgente') {
+        db.prepare('UPDATE requisicoes SET prioridade = ? WHERE id = ?').run(prioridade, id);
       }
 
       const itens = db.prepare(`
@@ -1289,8 +2190,11 @@ apiRouter.post('/requisicoes/:id/aprovar', (req, res) => {
       `);
 
       const movStmt = db.prepare(`
-        INSERT INTO movimentacoes (tipo, produto_id, quantidade, centro_custo_id, usuario_id, documento_referencia, observacao)
-        VALUES ('saida', ?, ?, ?, ?, ?, ?)
+        INSERT INTO movimentacoes (
+          tipo, motivo_diverso, produto_id, lote_id, quantidade, centro_custo_id,
+          usuario_id, responsavel_nome, documento_referencia, numero_lote, data_validade, observacao
+        )
+        VALUES ('saida', 'Atendimento de Requisição', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
 
       const histStmt = db.prepare(`
@@ -1305,6 +2209,15 @@ apiRouter.post('/requisicoes/:id/aprovar', (req, res) => {
         const dec = decisoesMap.get(item.id)!;
 
         if (dec.decisao === 'aprovado') {
+          // BLOQUEIO AUTOMÁTICO DE LOTE VENCIDO (FEFO):
+          // Verifica e abate apenas de lotes válidos (data_validade >= hoje). Se houver apenas lote vencido, bloqueia sumariamente!
+          const lotesConsumidos = consumirLotesValidosFEFO(item.produto_id, dec.quantidade_atendida);
+          const primeiroLote = lotesConsumidos[0] || { lote_id: null, numero_lote: null, data_validade: null };
+          const resumoLotes = lotesConsumidos
+            .filter((l) => l.numero_lote)
+            .map((l) => `${l.numero_lote}${l.data_validade ? ` (Val: ${l.data_validade})` : ''}: ${l.quantidade_consumida}`)
+            .join(', ');
+
           const updateResult = debitProdStmt.run(dec.quantidade_atendida, item.produto_id, dec.quantidade_atendida);
           if (updateResult.changes === 0) {
             throw new Error(`Falha de concorrência ao debitar estoque de "${item.produto_nome}".`);
@@ -1314,11 +2227,15 @@ apiRouter.post('/requisicoes/:id/aprovar', (req, res) => {
 
           movStmt.run(
             item.produto_id,
+            primeiroLote.lote_id,
             dec.quantidade_atendida,
             reqRow.centro_custo_id,
             user.id,
+            user.nome,
             reqRow.numero_requisicao,
-            `Atendimento de Requisição (Item aprovado por ${user.nome})`
+            primeiroLote.numero_lote,
+            primeiroLote.data_validade,
+            `Atendimento de Requisição (Item aprovado por ${user.nome})${resumoLotes ? ` | Lote(s): ${resumoLotes}` : ''}`
           );
 
           histStmt.run(
@@ -1331,7 +2248,7 @@ apiRouter.post('/requisicoes/:id/aprovar', (req, res) => {
             'aprovado',
             item.quantidade_solicitada,
             dec.quantidade_atendida,
-            `Item APROVADO por ${user.nome} (${user.perfil.toUpperCase()}): ${item.produto_codigo} - ${item.produto_nome}. Solicitado: ${item.quantidade_solicitada} ${item.unidade_medida} | Atendido: ${dec.quantidade_atendida} ${item.unidade_medida}.`,
+            `Item APROVADO por ${user.nome} (${user.perfil.toUpperCase()}): ${item.produto_codigo} - ${item.produto_nome}. Solicitado: ${item.quantidade_solicitada} ${item.unidade_medida} | Atendido: ${dec.quantidade_atendida} ${item.unidade_medida}.${resumoLotes ? ` Lote(s): ${resumoLotes}.` : ''}`,
             dec.motivo_decisao
           );
         } else {
@@ -1900,22 +2817,508 @@ apiRouter.delete('/emprestimos/:id', (req, res) => {
 });
 
 // ============================================================================
-// 10. MOVIMENTAÇÕES DE ESTOQUE (LIVRO-CAIXA / AUDITORIA IMUTÁVEL)
+// 9.5 EMPRÉSTIMO INSTITUCIONAL ENTRE ENTIDADES (HOSPITAIS PARCEIROS)
 // ============================================================================
 
-apiRouter.get('/movimentacoes', (req, res) => {
-  const { tipo, produto_id, centro_custo_id, limite, busca } = req.query;
+function getEmprestimoInstitucionalCompleto(id: number | string) {
+  const emp = db.prepare(`
+    SELECT 
+      ei.*,
+      f.codigo as entidade_codigo,
+      COALESCE(f.nome_fantasia, f.razao_social) as entidade_nome,
+      f.razao_social as entidade_razao_social,
+      f.cnpj as entidade_cnpj,
+      f.telefone as entidade_telefone,
+      u.nome as responsavel_almoxarifado_nome
+    FROM emprestimos_institucionais ei
+    JOIN fornecedores f ON ei.entidade_id = f.id
+    JOIN usuarios u ON ei.responsavel_almoxarifado_id = u.id
+    WHERE ei.id = ?
+  `).get(id) as any;
+
+  if (!emp) return null;
+
+  const itens = db.prepare(`
+    SELECT 
+      iei.*,
+      p.codigo as produto_codigo,
+      p.nome as produto_nome,
+      p.unidade_medida
+    FROM itens_emprestimo_institucional iei
+    JOIN produtos p ON iei.produto_id = p.id
+    WHERE iei.emprestimo_id = ?
+    ORDER BY iei.id ASC
+  `).all(id);
+
+  return {
+    ...emp,
+    itens,
+  };
+}
+
+apiRouter.get('/emprestimos-institucionais', (req, res) => {
+  const { tipo, status, entidade_id, busca } = req.query;
 
   let query = `
     SELECT 
-      m.id, m.tipo, m.quantidade, m.documento_referencia, m.numero_lote, m.data_validade,
-      m.valor_unitario, m.observacao, m.data_movimentacao,
+      ei.*,
+      f.codigo as entidade_codigo,
+      COALESCE(f.nome_fantasia, f.razao_social) as entidade_nome,
+      f.razao_social as entidade_razao_social,
+      f.cnpj as entidade_cnpj,
+      f.telefone as entidade_telefone,
+      u.nome as responsavel_almoxarifado_nome
+    FROM emprestimos_institucionais ei
+    JOIN fornecedores f ON ei.entidade_id = f.id
+    JOIN usuarios u ON ei.responsavel_almoxarifado_id = u.id
+    WHERE 1=1
+  `;
+  const params: any[] = [];
+
+  if (tipo && (tipo === 'recebido' || tipo === 'concedido')) {
+    query += ' AND ei.tipo = ?';
+    params.push(tipo);
+  }
+
+  if (status && (status === 'pendente_devolucao' || status === 'quitado')) {
+    query += ' AND ei.status = ?';
+    params.push(status);
+  }
+
+  if (entidade_id) {
+    query += ' AND ei.entidade_id = ?';
+    params.push(Number(entidade_id));
+  }
+
+  if (busca && typeof busca === 'string' && busca.trim()) {
+    const term = `%${busca.trim()}%`;
+    query += ' AND (ei.numero_documento LIKE ? OR f.razao_social LIKE ? OR f.nome_fantasia LIKE ? OR ei.responsavel_entidade_parceira LIKE ?)';
+    params.push(term, term, term, term);
+  }
+
+  query += ' ORDER BY ei.id DESC';
+
+  const rows = db.prepare(query).all(...params) as any[];
+  const itensStmt = db.prepare(`
+    SELECT 
+      iei.*,
+      p.codigo as produto_codigo,
+      p.nome as produto_nome,
+      p.unidade_medida
+    FROM itens_emprestimo_institucional iei
+    JOIN produtos p ON iei.produto_id = p.id
+    WHERE iei.emprestimo_id = ?
+    ORDER BY iei.id ASC
+  `);
+
+  const result = rows.map((row) => ({
+    ...row,
+    itens: itensStmt.all(row.id),
+  }));
+
+  res.json(result);
+});
+
+apiRouter.get('/emprestimos-institucionais/:id', (req, res) => {
+  const emp = getEmprestimoInstitucionalCompleto(req.params.id);
+  if (!emp) {
+    res.status(404).json({ error: 'Empréstimo institucional não encontrado' });
+    return;
+  }
+  res.json(emp);
+});
+
+apiRouter.post('/emprestimos-institucionais', (req, res) => {
+  const user = authenticateRequest(req);
+  if (!user || (user.perfil !== 'admin' && user.perfil !== 'almoxarife')) {
+    res.status(403).json({ error: 'Apenas Almoxarifes e Administradores podem registrar empréstimos institucionais entre entidades' });
+    return;
+  }
+
+  const {
+    tipo,
+    entidade_id,
+    responsavel_entidade_parceira,
+    observacao,
+    itens,
+  } = req.body || {};
+
+  if (tipo !== 'recebido' && tipo !== 'concedido') {
+    res.status(400).json({ error: 'O tipo do empréstimo institucional deve ser "recebido" (Pegamos emprestado) ou "concedido" (Emprestamos para outra entidade)' });
+    return;
+  }
+
+  if (!entidade_id) {
+    res.status(400).json({ error: 'Selecione a Entidade Parceira / Hospital no cadastro de Fornecedores e Entidades' });
+    return;
+  }
+
+  if (!Array.isArray(itens) || itens.length === 0) {
+    res.status(400).json({ error: 'Adicione pelo menos 1 item de produto para o termo de empréstimo institucional' });
+    return;
+  }
+
+  const year = new Date().getFullYear();
+  const prefix = tipo === 'recebido' ? `EMP-REC-${year}` : `EMP-CON-${year}`;
+  const countRow = db.prepare(`SELECT COUNT(*) as count FROM emprestimos_institucionais WHERE numero_documento LIKE ?`).get(`${prefix}-%`) as { count: number };
+  const nextSeq = String(countRow.count + 1).padStart(4, '0');
+  const numero_documento = `${prefix}-${nextSeq}`;
+
+  try {
+    const createdLoan = runInTransaction(() => {
+      const entidade = db.prepare('SELECT * FROM fornecedores WHERE id = ?').get(Number(entidade_id)) as any;
+      if (!entidade) {
+        throw new Error('Entidade parceira / fornecedor selecionado não foi encontrado no banco de dados');
+      }
+
+      const empInfo = db.prepare(`
+        INSERT INTO emprestimos_institucionais (
+          numero_documento, tipo, entidade_id, responsavel_almoxarifado_id,
+          responsavel_entidade_parceira, status, observacao
+        ) VALUES (?, ?, ?, ?, ?, 'pendente_devolucao', ?)
+      `).run(
+        numero_documento,
+        tipo,
+        entidade.id,
+        user.id,
+        responsavel_entidade_parceira ? String(responsavel_entidade_parceira).trim() : null,
+        observacao ? String(observacao).trim() : null
+      );
+
+      const emprestimoId = Number(empInfo.lastInsertRowid);
+
+      const itemStmt = db.prepare(`
+        INSERT INTO itens_emprestimo_institucional (
+          emprestimo_id, produto_id, lote_id, numero_lote, data_validade,
+          quantidade, quantidade_devolvida
+        ) VALUES (?, ?, ?, ?, ?, ?, 0)
+      `);
+
+      const movStmt = db.prepare(`
+        INSERT INTO movimentacoes (
+          tipo, motivo_diverso, produto_id, lote_id, quantidade, centro_custo_id,
+          fornecedor_id, emprestimo_institucional_id, usuario_id, responsavel_nome,
+          documento_referencia, numero_lote, data_validade, observacao
+        ) VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+
+      const nomeEntidadeLabel = `${entidade.codigo} - ${entidade.nome_fantasia || entidade.razao_social}`;
+
+      for (const it of itens) {
+        const prodId = Number(it.produto_id);
+        const qtd = Number(it.quantidade);
+        if (!prodId || !qtd || qtd <= 0) {
+          throw new Error('Todos os itens do empréstimo devem ter produto válido e quantidade maior que zero');
+        }
+
+        const prod = db.prepare('SELECT * FROM produtos WHERE id = ? AND ativo = 1').get(prodId) as any;
+        if (!prod) {
+          throw new Error(`Produto #${prodId} não encontrado ou inativo`);
+        }
+
+        if (tipo === 'recebido') {
+          // Cenário A - Pegamos emprestado de outra entidade:
+          // 1. O Hospital X é selecionado como Fornecedor/Entidade.
+          // 2. Registra-se uma Entrada Diversa: "Entrada por Empréstimo Recebido".
+          // 3. O produto entra no saldo disponível para uso.
+          // 4. O sistema gera uma conta a pagar de estoque (dívida em quantidade com aquela entidade).
+          const numLote = it.numero_lote ? String(it.numero_lote).trim().toUpperCase() : `LT-${numero_documento}`;
+          const dtValidade = it.data_validade ? String(it.data_validade).trim().slice(0, 10) : null;
+
+          const exigeValidade = prod.controla_validade === undefined ? prod.tipo === 'consumivel' : prod.controla_validade === 1;
+          if (exigeValidade && !dtValidade) {
+            throw new Error(`Informe a Data de Validade do lote recebido para o item "${prod.codigo} - ${prod.nome}".`);
+          }
+
+          const loteReg = upsertLoteEstoque({
+            produto_id: prodId,
+            numero_lote: numLote,
+            data_validade: dtValidade,
+            quantidade: qtd,
+            fornecedor_id: entidade.id,
+            documento_referencia: numero_documento,
+          });
+
+          db.prepare('UPDATE produtos SET quantidade_atual = quantidade_atual + ? WHERE id = ?').run(qtd, prodId);
+
+          itemStmt.run(emprestimoId, prodId, loteReg.id, loteReg.numero_lote, loteReg.data_validade, qtd);
+
+          movStmt.run(
+            'entrada',
+            'Entrada por Empréstimo Recebido',
+            prodId,
+            loteReg.id,
+            qtd,
+            entidade.id,
+            emprestimoId,
+            user.id,
+            user.nome,
+            numero_documento,
+            loteReg.numero_lote,
+            loteReg.data_validade,
+            `Entrada por Empréstimo Recebido de ${nomeEntidadeLabel}${observacao ? ` | Obs: ${observacao}` : ''}`
+          );
+        } else {
+          // Cenário B - Emprestamos para outra entidade:
+          // 1. Registra-se uma Saída Diversa: "Empréstimo Concedido a Terceiros" para a entidade parceira.
+          // 2. Bloqueia sumariamente lotes vencidos!
+          if (prod.quantidade_atual < qtd) {
+            throw new Error(
+              `Saldo insuficiente para conceder empréstimo do item "${prod.codigo} - ${prod.nome}". ` +
+              `Disponível: ${prod.quantidade_atual} ${prod.unidade_medida}, Solicitado: ${qtd} ${prod.unidade_medida}.`
+            );
+          }
+
+          const loteIdPreferencial = it.lote_id ? Number(it.lote_id) : null;
+          const lotesConsumidos = consumirLotesValidosFEFO(prodId, qtd, loteIdPreferencial);
+          const lotePrincipal = lotesConsumidos[0] || { lote_id: null, numero_lote: it.numero_lote || null, data_validade: it.data_validade || null };
+
+          db.prepare('UPDATE produtos SET quantidade_atual = quantidade_atual - ? WHERE id = ? AND quantidade_atual >= ?').run(qtd, prodId, qtd);
+
+          itemStmt.run(
+            emprestimoId,
+            prodId,
+            lotePrincipal.lote_id,
+            lotePrincipal.numero_lote,
+            lotePrincipal.data_validade,
+            qtd
+          );
+
+          movStmt.run(
+            'saida',
+            'Empréstimo Concedido a Terceiros',
+            prodId,
+            lotePrincipal.lote_id,
+            qtd,
+            entidade.id,
+            emprestimoId,
+            user.id,
+            user.nome,
+            numero_documento,
+            lotePrincipal.numero_lote,
+            lotePrincipal.data_validade,
+            `Empréstimo Concedido a Terceiros (${nomeEntidadeLabel})${observacao ? ` | Obs: ${observacao}` : ''}`
+          );
+        }
+      }
+
+      return getEmprestimoInstitucionalCompleto(emprestimoId);
+    });
+
+    res.status(201).json({
+      message:
+        tipo === 'recebido'
+          ? `Empréstimo Recebido (${numero_documento}) registrado com sucesso! Saldo somado ao estoque e dívida institucional aberta.`
+          : `Empréstimo Concedido (${numero_documento}) registrado com sucesso! Saldo debitado e ficha de empréstimo pronta para impressão.`,
+      data: createdLoan,
+    });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message || 'Erro ao registrar empréstimo institucional' });
+  }
+});
+
+apiRouter.post('/emprestimos-institucionais/:id/devolver', (req, res) => {
+  const user = authenticateRequest(req);
+  if (!user || (user.perfil !== 'admin' && user.perfil !== 'almoxarife')) {
+    res.status(403).json({ error: 'Apenas Almoxarifes e Administradores podem registrar devoluções de empréstimos institucionais' });
+    return;
+  }
+
+  const { id } = req.params;
+  const { responsavel_entidade_parceira, observacao, itens_devolucao } = req.body || {};
+
+  try {
+    const updatedLoan = runInTransaction(() => {
+      const emp = getEmprestimoInstitucionalCompleto(Number(id));
+      if (!emp) {
+        throw new Error('Empréstimo institucional não encontrado');
+      }
+
+      if (emp.status === 'quitado') {
+        throw new Error('Este empréstimo institucional já se encontra integralmente quitado/devolvido');
+      }
+
+      const docDevolucao = `DEV-${emp.numero_documento}`;
+      const movStmt = db.prepare(`
+        INSERT INTO movimentacoes (
+          tipo, motivo_diverso, produto_id, lote_id, quantidade, centro_custo_id,
+          fornecedor_id, emprestimo_institucional_id, usuario_id, responsavel_nome,
+          documento_referencia, numero_lote, data_validade, observacao
+        ) VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+
+      // Mapa opcional de quantidades devolvidas por item (permite devolução parcial ou integral)
+      const mapDevolucao = new Map<number, { quantidade: number; numero_lote?: string; data_validade?: string; lote_id?: number }>();
+      if (Array.isArray(itens_devolucao) && itens_devolucao.length > 0) {
+        for (const d of itens_devolucao) {
+          mapDevolucao.set(Number(d.item_id), {
+            quantidade: Number(d.quantidade),
+            numero_lote: d.numero_lote,
+            data_validade: d.data_validade,
+            lote_id: d.lote_id ? Number(d.lote_id) : undefined,
+          });
+        }
+      }
+
+      let algumDevolvido = false;
+
+      for (const item of emp.itens) {
+        const pendente = Number(item.quantidade) - Number(item.quantidade_devolvida || 0);
+        if (pendente <= 0) continue;
+
+        const infoDev = mapDevolucao.has(item.id)
+          ? mapDevolucao.get(item.id)!
+          : { quantidade: pendente, numero_lote: item.numero_lote, data_validade: item.data_validade, lote_id: item.lote_id };
+
+        const qtdDevolver = Number(infoDev.quantidade);
+        if (!qtdDevolver || qtdDevolver <= 0) continue;
+        if (qtdDevolver > pendente) {
+          throw new Error(
+            `Quantidade de devolução (${qtdDevolver}) para "${item.produto_nome}" excede o saldo pendente (${pendente}).`
+          );
+        }
+
+        algumDevolvido = true;
+        const prod = db.prepare('SELECT * FROM produtos WHERE id = ?').get(item.produto_id) as any;
+
+        if (emp.tipo === 'recebido') {
+          // Cenário A - Quando formos devolver o que pegamos emprestado:
+          // Gera-se uma Saída Diversa: "Devolução de Empréstimo a Terceiros", abatendo o nosso estoque
+          if (prod.quantidade_atual < qtdDevolver) {
+            throw new Error(
+              `Estoque insuficiente para devolver "${item.produto_nome}" à entidade ${emp.entidade_nome}. ` +
+              `Saldo atual: ${prod.quantidade_atual} ${item.unidade_medida}, Tentativa de devolver: ${qtdDevolver} ${item.unidade_medida}.`
+            );
+          }
+
+          const lotesConsumidos = consumirLotesValidosFEFO(item.produto_id, qtdDevolver, infoDev.lote_id || null);
+          const lotePrincipal = lotesConsumidos[0] || { lote_id: item.lote_id, numero_lote: item.numero_lote, data_validade: item.data_validade };
+
+          db.prepare('UPDATE produtos SET quantidade_atual = quantidade_atual - ? WHERE id = ? AND quantidade_atual >= ?').run(
+            qtdDevolver,
+            item.produto_id,
+            qtdDevolver
+          );
+
+          movStmt.run(
+            'saida',
+            'Devolução de Empréstimo a Terceiros',
+            item.produto_id,
+            lotePrincipal.lote_id,
+            qtdDevolver,
+            emp.entidade_id,
+            emp.id,
+            user.id,
+            user.nome,
+            docDevolucao,
+            lotePrincipal.numero_lote,
+            lotePrincipal.data_validade,
+            `Devolução de Empréstimo a Terceiros (${emp.entidade_nome}) ref. ${emp.numero_documento}${observacao ? ` | ${observacao}` : ''}`
+          );
+        } else {
+          // Cenário B - Quando a entidade parceira nos devolver o que emprestamos:
+          // Gera-se uma Entrada Diversa: "Recebimento de Devolução de Empréstimo", somando ao nosso estoque
+          const loteReg = upsertLoteEstoque({
+            produto_id: item.produto_id,
+            numero_lote: infoDev.numero_lote || item.numero_lote || `LT-${docDevolucao}`,
+            data_validade: infoDev.data_validade || item.data_validade || null,
+            quantidade: qtdDevolver,
+            fornecedor_id: emp.entidade_id,
+            documento_referencia: docDevolucao,
+          });
+
+          db.prepare('UPDATE produtos SET quantidade_atual = quantidade_atual + ? WHERE id = ?').run(qtdDevolver, item.produto_id);
+
+          movStmt.run(
+            'entrada',
+            'Recebimento de Devolução de Empréstimo',
+            item.produto_id,
+            loteReg.id,
+            qtdDevolver,
+            emp.entidade_id,
+            emp.id,
+            user.id,
+            user.nome,
+            docDevolucao,
+            loteReg.numero_lote,
+            loteReg.data_validade,
+            `Recebimento de Devolução de Empréstimo (${emp.entidade_nome}) ref. ${emp.numero_documento}${observacao ? ` | ${observacao}` : ''}`
+          );
+        }
+
+        db.prepare(`
+          UPDATE itens_emprestimo_institucional
+          SET quantidade_devolvida = quantidade_devolvida + ?
+          WHERE id = ?
+        `).run(qtdDevolver, item.id);
+      }
+
+      if (!algumDevolvido) {
+        throw new Error('Informe ao menos 1 item com quantidade positiva para registrar a devolução.');
+      }
+
+      // Verifica se todos os itens foram quitados
+      const itensAtualizados = db.prepare(`
+        SELECT quantidade, quantidade_devolvida FROM itens_emprestimo_institucional WHERE emprestimo_id = ?
+      `).all(emp.id) as Array<{ quantidade: number; quantidade_devolvida: number }>;
+
+      const tudoQuitado = itensAtualizados.every((i) => Number(i.quantidade_devolvida) >= Number(i.quantidade));
+
+      const novaObs = observacao && String(observacao).trim()
+        ? `${emp.observacao ? emp.observacao + ' | ' : ''}Devolução: ${String(observacao).trim()}`
+        : emp.observacao;
+
+      db.prepare(`
+        UPDATE emprestimos_institucionais
+        SET status = ?,
+            data_quitacao = CASE WHEN ? = 'quitado' THEN CURRENT_TIMESTAMP ELSE data_quitacao END,
+            responsavel_entidade_parceira = COALESCE(?, responsavel_entidade_parceira),
+            observacao = ?
+        WHERE id = ?
+      `).run(
+        tudoQuitado ? 'quitado' : 'pendente_devolucao',
+        tudoQuitado ? 'quitado' : 'pendente_devolucao',
+        responsavel_entidade_parceira ? String(responsavel_entidade_parceira).trim() : null,
+        novaObs,
+        emp.id
+      );
+
+      return getEmprestimoInstitucionalCompleto(emp.id);
+    });
+
+    res.json({
+      message:
+        updatedLoan.status === 'quitado'
+          ? `Empréstimo institucional ${updatedLoan.numero_documento} integralmente quitado/devolvido com sucesso!`
+          : `Devolução parcial registrada para o documento ${updatedLoan.numero_documento}.`,
+      data: updatedLoan,
+    });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message || 'Erro ao processar devolução de empréstimo institucional' });
+  }
+});
+
+// ============================================================================
+// 10. MOVIMENTAÇÕES DE ESTOQUE & SAÍDAS E ENTRADAS DIVERSAS
+// ============================================================================
+
+apiRouter.get('/movimentacoes', (req, res) => {
+  const { tipo, motivo_diverso, apenas_diversas, produto_id, centro_custo_id, limite, busca } = req.query;
+
+  let query = `
+    SELECT 
+      m.id, m.tipo, m.motivo_diverso, m.quantidade, m.documento_referencia, m.lote_id, m.numero_lote, m.data_validade,
+      m.valor_unitario, m.fornecedor_id, m.emprestimo_institucional_id, m.marca, m.nomenclatura_fornecedor,
+      m.responsavel_nome, m.observacao, m.data_movimentacao,
       p.id as produto_id, p.codigo as produto_codigo, p.nome as produto_nome, p.unidade_medida, p.tipo as produto_tipo,
       cc.id as centro_custo_id, cc.codigo as centro_custo_codigo, cc.nome as centro_custo_nome,
+      f.codigo as fornecedor_codigo, COALESCE(f.nome_fantasia, f.razao_social) as fornecedor_nome, f.cnpj as fornecedor_cnpj,
+      f.tipo_entidade as fornecedor_tipo_entidade,
       u.id as usuario_id, u.nome as usuario_nome, u.perfil as usuario_perfil
     FROM movimentacoes m
     JOIN produtos p ON m.produto_id = p.id
     LEFT JOIN centros_custo cc ON m.centro_custo_id = cc.id
+    LEFT JOIN fornecedores f ON m.fornecedor_id = f.id
     JOIN usuarios u ON m.usuario_id = u.id
     WHERE 1=1
   `;
@@ -1924,6 +3327,15 @@ apiRouter.get('/movimentacoes', (req, res) => {
   if (tipo && ['entrada', 'saida', 'estorno_entrada', 'estorno_saida'].includes(tipo as string)) {
     query += ' AND m.tipo = ?';
     params.push(tipo);
+  }
+
+  if (motivo_diverso && typeof motivo_diverso === 'string' && motivo_diverso.trim()) {
+    query += ' AND m.motivo_diverso = ?';
+    params.push(motivo_diverso.trim());
+  }
+
+  if (apenas_diversas === '1' || apenas_diversas === 'true') {
+    query += " AND m.motivo_diverso IS NOT NULL AND m.motivo_diverso NOT IN ('Entrada por Nota Fiscal', 'Atendimento de Requisição')";
   }
 
   if (produto_id) {
@@ -1937,18 +3349,227 @@ apiRouter.get('/movimentacoes', (req, res) => {
   }
 
   if (busca && typeof busca === 'string' && busca.trim()) {
-    query += ' AND (p.nome LIKE ? OR p.codigo LIKE ? OR m.documento_referencia LIKE ? OR cc.nome LIKE ?)';
+    query += ' AND (p.nome LIKE ? OR p.codigo LIKE ? OR m.documento_referencia LIKE ? OR cc.nome LIKE ? OR m.motivo_diverso LIKE ? OR m.numero_lote LIKE ?)';
     const term = `%${busca.trim()}%`;
-    params.push(term, term, term, term);
+    params.push(term, term, term, term, term, term);
   }
 
   query += ' ORDER BY m.id DESC';
 
-  const maxRows = Math.min(Number(limite) || 100, 500);
+  const maxRows = Math.min(Number(limite) || 150, 500);
   query += ` LIMIT ${maxRows}`;
 
   const rows = db.prepare(query).all(...params);
   res.json(rows);
+});
+
+apiRouter.post('/movimentacoes/diversas', (req, res) => {
+  const user = authenticateRequest(req);
+  if (!user || (user.perfil !== 'admin' && user.perfil !== 'almoxarife')) {
+    res.status(403).json({ error: 'Apenas Almoxarifes e Administradores podem registrar Entradas e Saídas Diversas' });
+    return;
+  }
+
+  const {
+    natureza, // 'entrada' | 'saida'
+    motivo_diverso,
+    produto_id,
+    lote_id,
+    numero_lote,
+    data_validade,
+    quantidade,
+    entidade_id,
+    centro_custo_id,
+    responsavel_nome,
+    documento_referencia,
+    justificativa,
+  } = req.body || {};
+
+  if (natureza !== 'entrada' && natureza !== 'saida') {
+    res.status(400).json({ error: 'A natureza da movimentação diversa deve ser "entrada" ou "saida"' });
+    return;
+  }
+
+  if (!motivo_diverso || !String(motivo_diverso).trim()) {
+    res.status(400).json({ error: 'O motivo da movimentação diversa é obrigatório' });
+    return;
+  }
+
+  const qtd = Number(quantidade);
+  if (!produto_id || !qtd || qtd <= 0) {
+    res.status(400).json({ error: 'Selecione um produto válido e informe quantidade maior que zero' });
+    return;
+  }
+
+  if (!justificativa || !String(justificativa).trim()) {
+    res.status(400).json({ error: 'A justificativa detalhada é obrigatória para registrar movimentações diversas' });
+    return;
+  }
+
+  const nomeResponsavel = responsavel_nome && String(responsavel_nome).trim()
+    ? String(responsavel_nome).trim()
+    : user.nome;
+
+  const year = new Date().getFullYear();
+  const docAutoPrefix = natureza === 'saida' ? `SDIV-${year}` : `EDIV-${year}`;
+  const countMov = db.prepare(`SELECT COUNT(*) as c FROM movimentacoes WHERE documento_referencia LIKE ?`).get(`${docAutoPrefix}-%`) as { c: number };
+  const docRefFinal = documento_referencia && String(documento_referencia).trim()
+    ? String(documento_referencia).trim().toUpperCase()
+    : `${docAutoPrefix}-${String(countMov.c + 1).padStart(4, '0')}`;
+
+  try {
+    const result = runInTransaction(() => {
+      const prod = db.prepare('SELECT * FROM produtos WHERE id = ?').get(Number(produto_id)) as any;
+      if (!prod) {
+        throw new Error('Produto não encontrado no catálogo');
+      }
+
+      const motivoTrim = String(motivo_diverso).trim();
+      const isBaixaVencimento =
+        motivoTrim === 'Saída por Vencimento/Descarte' ||
+        motivoTrim === 'Vencimento/Descarte';
+
+      let loteIdUsado: number | null = lote_id ? Number(lote_id) : null;
+      let numLoteUsado: string | null = numero_lote ? String(numero_lote).trim().toUpperCase() : null;
+      let dtValidadeUsada: string | null = data_validade ? String(data_validade).trim().slice(0, 10) : null;
+      let termoDescarte: any = null;
+
+      if (natureza === 'saida') {
+        if (prod.quantidade_atual < qtd) {
+          throw new Error(
+            `Saldo insuficiente no estoque para "${prod.codigo} - ${prod.nome}". ` +
+            `Disponível: ${prod.quantidade_atual} ${prod.unidade_medida}, Solicitado: ${qtd} ${prod.unidade_medida}.`
+          );
+        }
+
+        if (isBaixaVencimento) {
+          // ÚNICA movimentação permitida para lote vencido: "Saída por Vencimento/Descarte"
+          // Abate o saldo do lote vencido específico e gera o termo de descarte/baixa
+          let loteRow: any = null;
+          if (loteIdUsado) {
+            loteRow = db.prepare('SELECT * FROM lotes_estoque WHERE id = ? AND produto_id = ?').get(loteIdUsado, prod.id) as any;
+          } else {
+            // Busca lote vencido com saldo
+            const todayIso = new Date().toISOString().slice(0, 10);
+            loteRow = db.prepare(`
+              SELECT * FROM lotes_estoque
+              WHERE produto_id = ? AND quantidade_atual > 0 AND data_validade IS NOT NULL AND date(data_validade) < date(?)
+              ORDER BY date(data_validade) ASC
+              LIMIT 1
+            `).get(prod.id, todayIso) as any;
+          }
+
+          if (!loteRow) {
+            throw new Error(
+              `Para registrar "Saída por Vencimento/Descarte" do produto "${prod.codigo} - ${prod.nome}", selecione o lote específico que será descartado.`
+            );
+          }
+
+          if (loteRow.quantidade_atual < qtd) {
+            throw new Error(
+              `A quantidade informada (${qtd}) é maior que o saldo disponível no lote ${loteRow.numero_lote} (${loteRow.quantidade_atual} ${prod.unidade_medida}).`
+            );
+          }
+
+          db.prepare('UPDATE lotes_estoque SET quantidade_atual = quantidade_atual - ? WHERE id = ?').run(qtd, loteRow.id);
+          loteIdUsado = loteRow.id;
+          numLoteUsado = loteRow.numero_lote;
+          dtValidadeUsada = loteRow.data_validade;
+
+          termoDescarte = {
+            numero_termo: `TERMO-DESC-${docRefFinal}`,
+            data_emissao: new Date().toLocaleString('pt-BR'),
+            produto_codigo: prod.codigo,
+            produto_nome: prod.nome,
+            unidade_medida: prod.unidade_medida,
+            numero_lote: loteRow.numero_lote,
+            data_validade: loteRow.data_validade,
+            quantidade_descartada: qtd,
+            responsavel_nome: nomeResponsavel,
+            justificativa: String(justificativa).trim(),
+          };
+        } else {
+          // Qualquer outra saída diversa: BLOQUEIA SUMARIAMENTE lotes vencidos!
+          const lotesConsumidos = consumirLotesValidosFEFO(prod.id, qtd, loteIdUsado);
+          const primeiro = lotesConsumidos[0];
+          if (primeiro) {
+            loteIdUsado = primeiro.lote_id;
+            numLoteUsado = primeiro.numero_lote;
+            dtValidadeUsada = primeiro.data_validade;
+          }
+        }
+
+        db.prepare('UPDATE produtos SET quantidade_atual = quantidade_atual - ? WHERE id = ? AND quantidade_atual >= ?').run(
+          qtd,
+          prod.id,
+          qtd
+        );
+      } else {
+        // ENTRADA DIVERSA (Ajuste de Inventário (+), Doação Recebida, Devolução de Empréstimo entre Entidades, etc.)
+        const exigeLote = prod.controla_validade === undefined ? prod.tipo === 'consumivel' : prod.controla_validade === 1;
+        if (exigeLote && (!numLoteUsado || !dtValidadeUsada)) {
+          throw new Error(
+            `O item "${prod.codigo} - ${prod.nome}" exige informação de Lote e Data de Validade para entrada no estoque.`
+          );
+        }
+
+        const loteReg = upsertLoteEstoque({
+          produto_id: prod.id,
+          numero_lote: numLoteUsado || `LT-${docRefFinal}`,
+          data_validade: dtValidadeUsada,
+          quantidade: qtd,
+          fornecedor_id: entidade_id ? Number(entidade_id) : null,
+          documento_referencia: docRefFinal,
+        });
+
+        loteIdUsado = loteReg.id;
+        numLoteUsado = loteReg.numero_lote;
+        dtValidadeUsada = loteReg.data_validade;
+
+        db.prepare('UPDATE produtos SET quantidade_atual = quantidade_atual + ? WHERE id = ?').run(qtd, prod.id);
+      }
+
+      const movInfo = db.prepare(`
+        INSERT INTO movimentacoes (
+          tipo, motivo_diverso, produto_id, lote_id, quantidade, centro_custo_id,
+          fornecedor_id, usuario_id, responsavel_nome, documento_referencia,
+          numero_lote, data_validade, observacao
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        natureza,
+        motivoTrim,
+        prod.id,
+        loteIdUsado,
+        qtd,
+        centro_custo_id ? Number(centro_custo_id) : null,
+        entidade_id ? Number(entidade_id) : null,
+        user.id,
+        nomeResponsavel,
+        docRefFinal,
+        numLoteUsado,
+        dtValidadeUsada,
+        `${motivoTrim} | Resp: ${nomeResponsavel} | Justificativa: ${String(justificativa).trim()}`
+      );
+
+      const produtoAtualizado = db.prepare('SELECT * FROM produtos WHERE id = ?').get(prod.id);
+
+      return {
+        movimentacao_id: Number(movInfo.lastInsertRowid),
+        documento_referencia: docRefFinal,
+        natureza,
+        motivo_diverso: motivoTrim,
+        produto: produtoAtualizado,
+        termo_descarte: termoDescarte,
+      };
+    });
+
+    res.status(201).json({
+      message: `${natureza === 'entrada' ? 'Entrada Diversa' : 'Saída Diversa'} (${result.motivo_diverso}) registrada com sucesso!`,
+      data: result,
+    });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message || 'Erro ao registrar movimentação diversa' });
+  }
 });
 
 apiRouter.post('/movimentacoes/:id/estornar', (req, res) => {
@@ -2055,6 +3676,11 @@ apiRouter.get('/relatorios/catalogo', (_req, res) => {
           titulo: 'Relação de Consumíveis vs Equipamentos Patrimoniais',
           descricao: 'Classificação analítica por tipo de insumo e distribuição patrimonial no almoxarifado.',
         },
+        {
+          id: 'validade_lotes',
+          titulo: 'Controle de Lotes e Alertas de Validade (30 / 60 / 90 dias e Vencidos)',
+          descricao: 'Monitoramento preventivo de lotes com vencimento em 90 dias (Atenção), 60 dias (Alerta), 30 dias (Crítico) e bloqueados por vencimento.',
+        },
       ],
     },
     {
@@ -2115,6 +3741,11 @@ apiRouter.get('/relatorios/catalogo', (_req, res) => {
           id: 'historico_devolucoes',
           titulo: 'Histórico de Devoluções e Conservação de Aparelhos',
           descricao: 'Registro das conferências de integridade e estado de conservação no recebimento de retorno.',
+        },
+        {
+          id: 'emprestimos_institucionais_relatorio',
+          titulo: 'Empréstimos Institucionais entre Entidades / Hospitais Parceiros',
+          descricao: 'Controle de saldos recebidos por empréstimo (dívida em quantidade) e concedidos a outras instituições.',
         },
       ],
     },
@@ -2678,6 +4309,270 @@ apiRouter.post('/relatorios/executar', (req, res) => {
         }));
 
         resumo = `Total de ${dados.length} devoluções registradas com recomposição automática do saldo patrimonial.`;
+        break;
+      }
+
+      case 'validade_lotes': {
+        titulo = 'Controle de Lotes e Alertas de Validade (30 / 60 / 90 Dias e Vencidos)';
+        subtitulo = 'Rastreabilidade sanitária por lote com bloqueio automático para itens vencidos';
+        colunas = [
+          { chave: 'produto_codigo', rotulo: 'Código Único' },
+          { chave: 'produto_nome', rotulo: 'Descrição Padrão do Produto' },
+          { chave: 'numero_lote', rotulo: 'Lote' },
+          { chave: 'data_validade_formatada', rotulo: 'Validade', alinhamento: 'center' },
+          { chave: 'dias_restantes_desc', rotulo: 'Prazo', alinhamento: 'center' },
+          { chave: 'quantidade_atual', rotulo: 'Saldo no Lote', alinhamento: 'right' },
+          { chave: 'unidade_medida', rotulo: 'UN', alinhamento: 'center' },
+          { chave: 'status_alerta', rotulo: 'Classificação / Bloqueio', alinhamento: 'center' },
+        ];
+
+        let sql = `
+          SELECT 
+            le.*,
+            p.codigo as produto_codigo,
+            p.nome as produto_nome,
+            p.unidade_medida,
+            COALESCE(f.nome_fantasia, f.razao_social) as fornecedor_nome
+          FROM lotes_estoque le
+          JOIN produtos p ON le.produto_id = p.id
+          LEFT JOIN fornecedores f ON le.fornecedor_id = f.id
+          WHERE le.quantidade_atual > 0 AND p.ativo = 1
+        `;
+        const params: any[] = [];
+        if (produto_id) {
+          sql += ' AND le.produto_id = ?';
+          params.push(Number(produto_id));
+        }
+        sql += ' ORDER BY CASE WHEN le.data_validade IS NULL THEN 1 ELSE 0 END, date(le.data_validade) ASC';
+
+        const rows = db.prepare(sql).all(...params) as any[];
+        let qtdVencidos = 0;
+        let qtd30 = 0;
+        let qtd60 = 0;
+        let qtd90 = 0;
+
+        dados = rows.map((r) => {
+          const info = classifyLoteValidade(r.data_validade);
+          let statusAlerta = 'REGULAR (> 90 DIAS)';
+          if (info.status_validade === 'vencido') {
+            statusAlerta = 'BLOQUEADO - VENCIDO (APENAS DESCARTE)';
+            qtdVencidos++;
+          } else if (info.status_validade === 'critico_30d') {
+            statusAlerta = 'CRÍTICO (ATÉ 30 DIAS - VERMELHO)';
+            qtd30++;
+          } else if (info.status_validade === 'alerta_60d') {
+            statusAlerta = 'ALERTA (ATÉ 60 DIAS - LARANJA)';
+            qtd60++;
+          } else if (info.status_validade === 'atencao_90d') {
+            statusAlerta = 'ATENÇÃO (ATÉ 90 DIAS - AMARELO)';
+            qtd90++;
+          } else if (info.status_validade === 'sem_validade') {
+            statusAlerta = 'SEM VALIDADE';
+          }
+
+          return {
+            ...r,
+            data_validade_formatada: r.data_validade ? r.data_validade.split('-').reverse().join('/') : 'Indeterminada',
+            dias_restantes_desc:
+              info.dias_para_vencer === null
+                ? '-'
+                : info.dias_para_vencer < 0
+                ? `Vencido há ${Math.abs(info.dias_para_vencer)}d`
+                : `${info.dias_para_vencer} dia(s)`,
+            status_alerta: statusAlerta,
+          };
+        });
+
+        resumo = `Total de ${dados.length} lote(s) ativo(s): ${qtdVencidos} Vencido(s)/Bloqueado(s), ${qtd30} Crítico(s) (≤30d), ${qtd60} em Alerta (≤60d) e ${qtd90} em Atenção (≤90d).`;
+        break;
+      }
+
+      case 'emprestimos_institucionais_relatorio': {
+        titulo = 'Empréstimos Institucionais entre Entidades / Hospitais Parceiros';
+        subtitulo = 'Demonstrativo de empréstimos recebidos (dívidas em estoque) e concedidos a terceiros';
+        colunas = [
+          { chave: 'numero_documento', rotulo: 'Documento' },
+          { chave: 'tipo_desc', rotulo: 'Operação' },
+          { chave: 'entidade_nome', rotulo: 'Entidade Parceira / Hospital' },
+          { chave: 'produto_desc', rotulo: 'Produto (Código Único)' },
+          { chave: 'numero_lote', rotulo: 'Lote' },
+          { chave: 'quantidade', rotulo: 'Qtd Total', alinhamento: 'right' },
+          { chave: 'quantidade_devolvida', rotulo: 'Qtd Quitado', alinhamento: 'right' },
+          { chave: 'saldo_pendente', rotulo: 'Pendente', alinhamento: 'right' },
+          { chave: 'status_desc', rotulo: 'Situação', alinhamento: 'center' },
+        ];
+
+        const rows = db.prepare(`
+          SELECT 
+            ei.numero_documento, ei.tipo, ei.status, ei.data_operacao,
+            COALESCE(f.nome_fantasia, f.razao_social) as entidade_nome,
+            p.codigo as produto_codigo, p.nome as produto_nome, p.unidade_medida,
+            iei.numero_lote, iei.quantidade, iei.quantidade_devolvida
+          FROM itens_emprestimo_institucional iei
+          JOIN emprestimos_institucionais ei ON iei.emprestimo_id = ei.id
+          JOIN fornecedores f ON ei.entidade_id = f.id
+          JOIN produtos p ON iei.produto_id = p.id
+          ORDER BY ei.id DESC, iei.id ASC
+        `).all() as any[];
+
+        dados = rows.map((r) => ({
+          ...r,
+          tipo_desc: r.tipo === 'recebido' ? 'RECEBIDO (Pegamos Emprestado)' : 'CONCEDIDO (Emprestamos)',
+          produto_desc: `${r.produto_codigo} - ${r.produto_nome} (${r.unidade_medida})`,
+          numero_lote: r.numero_lote || '-',
+          saldo_pendente: Math.max(0, Number(r.quantidade) - Number(r.quantidade_devolvida || 0)),
+          status_desc: r.status === 'quitado' ? 'QUITADO' : 'PENDENTE DEVOLUÇÃO',
+        }));
+
+        resumo = `Total de ${dados.length} item(ns) vinculados a operações de empréstimo interinstitucional entre unidades/hospitais.`;
+        break;
+      }
+
+      case 'relatorio_geral_almoxarifado': {
+        titulo = 'Relatório Geral Consolidado do Almoxarifado (Painel Executivo)';
+        subtitulo = 'Balanço completo de indicadores (KPIs), validade de lotes (30/60/90d), estoque crítico, empréstimos e consumo por setor';
+        colunas = [
+          { chave: 'bloco', rotulo: 'Bloco / Seção' },
+          { chave: 'indicador', rotulo: 'Indicador / Produto / Entidade' },
+          { chave: 'referencia', rotulo: 'Código / Lote / Setor' },
+          { chave: 'quantidade_valor', rotulo: 'Saldo / Valor', alinhamento: 'right' },
+          { chave: 'situacao', rotulo: 'Classificação / Status', alinhamento: 'center' },
+        ];
+
+        const totalProdutos = db.prepare('SELECT COUNT(*) as c FROM produtos WHERE ativo = 1').get() as { c: number };
+        const estoqueBaixo = db.prepare('SELECT COUNT(*) as c FROM produtos WHERE ativo = 1 AND quantidade_atual <= estoque_minimo').get() as { c: number };
+        const reqPendentes = db.prepare("SELECT COUNT(*) as c FROM requisicoes WHERE status = 'pendente'").get() as { c: number };
+        const reqAtendidas = db.prepare("SELECT COUNT(*) as c FROM requisicoes WHERE status = 'aprovada_atendida'").get() as { c: number };
+        const valorTotal = db.prepare('SELECT COALESCE(SUM(quantidade_atual * COALESCE(valor_unitario, 0)), 0) as total FROM produtos WHERE ativo = 1').get() as { total: number };
+        const empRecPend = db.prepare("SELECT COUNT(*) as c FROM emprestimos_institucionais WHERE tipo = 'recebido' AND status = 'pendente_devolucao'").get() as { c: number };
+        const empConcPend = db.prepare("SELECT COUNT(*) as c FROM emprestimos_institucionais WHERE tipo = 'concedido' AND status = 'pendente_devolucao'").get() as { c: number };
+
+        const lotesAtivos = db.prepare(`
+          SELECT le.*, p.codigo as produto_codigo, p.nome as produto_nome, p.unidade_medida
+          FROM lotes_estoque le
+          JOIN produtos p ON le.produto_id = p.id
+          WHERE le.quantidade_atual > 0 AND p.ativo = 1
+          ORDER BY CASE WHEN le.data_validade IS NULL THEN 1 ELSE 0 END, date(le.data_validade) ASC
+        `).all() as any[];
+
+        let lotesVencidos = 0;
+        let lotes30 = 0;
+        let lotes60 = 0;
+        let lotes90 = 0;
+        const linhasLotesAlerta: any[] = [];
+
+        for (const lt of lotesAtivos) {
+          const v = classifyLoteValidade(lt.data_validade);
+          if (v.status_validade === 'vencido') lotesVencidos++;
+          else if (v.status_validade === 'critico_30d') lotes30++;
+          else if (v.status_validade === 'alerta_60d') lotes60++;
+          else if (v.status_validade === 'atencao_90d') lotes90++;
+
+          if (['vencido', 'critico_30d', 'alerta_60d', 'atencao_90d'].includes(v.status_validade)) {
+            linhasLotesAlerta.push({
+              bloco: '2. ALERTA DE VALIDADE (LOTES)',
+              indicador: lt.produto_nome,
+              referencia: `${lt.produto_codigo} | Lote: ${lt.numero_lote} (Val: ${lt.data_validade ? lt.data_validade.split('-').reverse().join('/') : '-'})`,
+              quantidade_valor: `${lt.quantidade_atual} ${lt.unidade_medida}`,
+              situacao:
+                v.status_validade === 'vencido'
+                  ? 'BLOQUEADO / VENCIDO'
+                  : v.status_validade === 'critico_30d'
+                  ? `CRÍTICO 30D (${v.dias_para_vencer}d)`
+                  : v.status_validade === 'alerta_60d'
+                  ? `ALERTA 60D (${v.dias_para_vencer}d)`
+                  : `ATENÇÃO 90D (${v.dias_para_vencer}d)`,
+            });
+          }
+        }
+
+        const linhasKpis = [
+          {
+            bloco: '1. INDICADORES GERAIS (KPIs)',
+            indicador: 'Total de Produtos Ativos no Catálogo',
+            referencia: 'Catálogo Unificado',
+            quantidade_valor: `${totalProdutos.c} item(ns)`,
+            situacao: 'ATIVO',
+          },
+          {
+            bloco: '1. INDICADORES GERAIS (KPIs)',
+            indicador: 'Valor Contábil Total em Estoque',
+            referencia: 'Posição Financeira',
+            quantidade_valor: Number(valorTotal.total || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' }),
+            situacao: 'CONSOLIDADO',
+          },
+          {
+            bloco: '1. INDICADORES GERAIS (KPIs)',
+            indicador: 'Produtos em Estoque Baixo / Crítico',
+            referencia: 'Ponto de Reposição',
+            quantidade_valor: `${estoqueBaixo.c} item(ns)`,
+            situacao: estoqueBaixo.c > 0 ? 'REPOSIÇÃO NECESSÁRIA' : 'REGULAR',
+          },
+          {
+            bloco: '1. INDICADORES GERAIS (KPIs)',
+            indicador: 'Requisições de Setores (Pendentes / Atendidas)',
+            referencia: 'Fluxo de Dispensação',
+            quantidade_valor: `${reqPendentes.c} pend. / ${reqAtendidas.c} atend.`,
+            situacao: reqPendentes.c > 0 ? 'FILA ATIVA' : 'EM DIA',
+          },
+          {
+            bloco: '1. INDICADORES GERAIS (KPIs)',
+            indicador: 'Monitoramento de Validade de Lotes (Vencidos / 30d / 60d / 90d)',
+            referencia: 'Controle FEFO',
+            quantidade_valor: `${lotesVencidos} venc. | ${lotes30} (30d) | ${lotes60} (60d) | ${lotes90} (90d)`,
+            situacao: lotesVencidos > 0 ? 'LOTES BLOQUEADOS' : lotes30 > 0 ? 'CRÍTICO 30D' : 'MONITORADO',
+          },
+          {
+            bloco: '1. INDICADORES GERAIS (KPIs)',
+            indicador: 'Empréstimos entre Entidades Pendentes (Recebidos / Concedidos)',
+            referencia: 'Hospitais Parceiros',
+            quantidade_valor: `${empRecPend.c} a devolver | ${empConcPend.c} a receber`,
+            situacao: empRecPend.c + empConcPend.c > 0 ? 'PENDENTE QUITAÇÃO' : 'QUITADO',
+          },
+        ];
+
+        const criticosRows = db.prepare(`
+          SELECT codigo, nome, quantidade_atual, estoque_minimo, unidade_medida
+          FROM produtos
+          WHERE ativo = 1 AND quantidade_atual <= estoque_minimo
+          ORDER BY (CAST(quantidade_atual AS FLOAT) / CASE WHEN estoque_minimo = 0 THEN 1 ELSE estoque_minimo END) ASC
+          LIMIT 25
+        `).all() as any[];
+
+        const linhasCriticos = criticosRows.map((p) => ({
+          bloco: '3. ESTOQUE CRÍTICO / REPOSIÇÃO',
+          indicador: p.nome,
+          referencia: `${p.codigo} (Mín: ${p.estoque_minimo} ${p.unidade_medida})`,
+          quantidade_valor: `${p.quantidade_atual} ${p.unidade_medida}`,
+          situacao: p.quantidade_atual <= 0 ? 'ESGOTADO (ZERO)' : 'ABAIXO DO MÍNIMO',
+        }));
+
+        const consumoRows = db.prepare(`
+          SELECT cc.codigo, cc.nome, COALESCE(SUM(m.quantidade), 0) as total_itens
+          FROM centros_custo cc
+          LEFT JOIN movimentacoes m ON m.centro_custo_id = cc.id AND m.tipo = 'saida'
+          WHERE cc.ativo = 1
+          GROUP BY cc.id
+          HAVING total_itens > 0
+          ORDER BY total_itens DESC
+        `).all() as any[];
+
+        const linhasConsumo = consumoRows.map((c) => ({
+          bloco: '4. CONSUMO POR CENTRO DE CUSTO',
+          indicador: c.nome,
+          referencia: `Setor: ${c.codigo}`,
+          quantidade_valor: `${c.total_itens} unid. dispensadas`,
+          situacao: 'CONSUMO ACUMULADO',
+        }));
+
+        dados = [
+          ...linhasKpis,
+          ...linhasLotesAlerta,
+          ...linhasCriticos,
+          ...linhasConsumo,
+        ];
+
+        resumo = `Relatório Geral Consolidado: ${totalProdutos.c} produtos ativos (${Number(valorTotal.total || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}), ${estoqueBaixo.c} em estoque crítico, ${lotesVencidos} lote(s) vencido(s)/bloqueado(s) e ${lotes30 + lotes60 + lotes90} lote(s) em janela de vencimento (30/60/90 dias).`;
         break;
       }
 
