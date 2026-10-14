@@ -1244,32 +1244,87 @@ apiRouter.get('/lotes', (req, res) => {
   res.json(enriched);
 });
 
-apiRouter.get('/produtos', (req, res) => {
-  const { tipo, busca, estoque_baixo, apenas_ativos } = req.query;
+// ============================================================================
+// GRUPOS DE PRODUTOS & SUGESTÃO DE CÓDIGO
+// ============================================================================
 
-  let query = 'SELECT * FROM produtos WHERE 1=1';
+apiRouter.get('/grupos-produtos', (_req, res) => {
+  try {
+    const rows = db.prepare('SELECT * FROM grupos_produtos WHERE ativo = 1 ORDER BY id ASC').all();
+    res.json(rows);
+  } catch (err: any) {
+    res.status(500).json({ error: 'Erro ao buscar grupos de produtos: ' + err.message });
+  }
+});
+
+apiRouter.get('/produtos/sugestao-codigo', (_req, res) => {
+  try {
+    const row = db.prepare(
+      "SELECT codigo FROM produtos WHERE length(codigo) = 7 AND codigo GLOB '[0-9][0-9][0-9][0-9][0-9][0-9][0-9]' ORDER BY CAST(codigo AS INTEGER) DESC LIMIT 1"
+    ).get() as { codigo?: string } | undefined;
+    let nextNum = 4140001;
+    if (row && row.codigo) {
+      const num = parseInt(row.codigo, 10);
+      if (!isNaN(num) && num >= 4140001) {
+        nextNum = num + 1;
+      }
+    }
+    res.json({ codigo: String(nextNum) });
+  } catch {
+    res.json({ codigo: '4140001' });
+  }
+});
+
+apiRouter.get('/produtos', (req, res) => {
+  const { tipo, busca, codigo, nome, grupo_id, estoque_baixo, apenas_ativos } = req.query;
+
+  let query = `
+    SELECT 
+      p.*,
+      gp.nome as grupo_nome,
+      gp.codigo as grupo_codigo
+    FROM produtos p
+    LEFT JOIN grupos_produtos gp ON p.grupo_id = gp.id
+    WHERE 1=1
+  `;
   const params: any[] = [];
 
   if (apenas_ativos !== 'false') {
-    query += ' AND ativo = 1';
+    query += ' AND p.ativo = 1';
   }
 
   if (tipo && (tipo === 'consumivel' || tipo === 'nao_consumivel')) {
-    query += ' AND tipo = ?';
+    query += ' AND p.tipo = ?';
     params.push(tipo);
   }
 
+  if (grupo_id && String(grupo_id).trim()) {
+    query += ' AND p.grupo_id = ?';
+    params.push(Number(grupo_id));
+  }
+
+  if (codigo && String(codigo).trim()) {
+    query += ' AND p.codigo LIKE ?';
+    params.push(`%${String(codigo).trim()}%`);
+  }
+
+  if (nome && String(nome).trim()) {
+    query += ' AND (p.nome LIKE ? OR p.descricao LIKE ?)';
+    const termNome = `%${String(nome).trim()}%`;
+    params.push(termNome, termNome);
+  }
+
   if (estoque_baixo === 'true') {
-    query += ' AND quantidade_atual <= estoque_minimo';
+    query += ' AND p.quantidade_atual <= p.estoque_minimo';
   }
 
   if (busca && typeof busca === 'string' && busca.trim()) {
-    query += ' AND (codigo LIKE ? OR nome LIKE ? OR descricao LIKE ? OR localizacao LIKE ?)';
+    query += ' AND (p.codigo LIKE ? OR p.nome LIKE ? OR p.descricao LIKE ? OR p.localizacao LIKE ?)';
     const term = `%${busca.trim()}%`;
     params.push(term, term, term, term);
   }
 
-  query += ' ORDER BY nome ASC';
+  query += ' ORDER BY p.nome ASC';
 
   const rows = db.prepare(query).all(...params) as any[];
 
@@ -1317,6 +1372,8 @@ apiRouter.get('/produtos', (req, res) => {
     }
 
     for (const r of rows) {
+      r.custo_unitario = r.custo_unitario !== null && r.custo_unitario !== undefined ? Number(r.custo_unitario) : (Number(r.valor_unitario) || 0.0);
+      r.valor_unitario = Number(r.valor_unitario !== null && r.valor_unitario !== undefined ? r.valor_unitario : r.custo_unitario);
       r.fornecedores_vinculados = mapByProd.get(r.id) || [];
       const prodLotes = lotesByProd.get(r.id) || [];
       r.lotes = prodLotes;
@@ -1328,6 +1385,8 @@ apiRouter.get('/produtos', (req, res) => {
     }
   } catch {
     for (const r of rows) {
+      r.custo_unitario = Number(r.custo_unitario || r.valor_unitario || 0.0);
+      r.valor_unitario = Number(r.valor_unitario || r.custo_unitario || 0.0);
       r.fornecedores_vinculados = [];
       r.lotes = [];
       r.quantidade_bloqueada_vencida = 0;
@@ -1419,30 +1478,69 @@ apiRouter.post('/produtos', (req, res) => {
     return;
   }
 
-  const { codigo, nome, descricao, unidade_medida, tipo, controla_validade, estoque_minimo, estoque_maximo, valor_unitario, localizacao } = req.body;
-  if (!codigo || !nome || !unidade_medida || !tipo) {
-    res.status(400).json({ error: 'Código único interno, descrição padrão, unidade de medida e tipo são obrigatórios' });
+  let { codigo, nome, descricao, grupo_id, unidade_medida, tipo, controla_validade, estoque_minimo, estoque_maximo, valor_unitario, custo_unitario, localizacao } = req.body;
+  if (!nome || !unidade_medida || !tipo) {
+    res.status(400).json({ error: 'Descrição padrão, unidade de medida e tipo são obrigatórios' });
     return;
   }
 
+  // Gera código sequencial numérico de 7 dígitos caso deixado em branco
+  if (!codigo || !String(codigo).trim()) {
+    try {
+      const row = db.prepare(
+        "SELECT codigo FROM produtos WHERE length(codigo) = 7 AND codigo GLOB '[0-9][0-9][0-9][0-9][0-9][0-9][0-9]' ORDER BY CAST(codigo AS INTEGER) DESC LIMIT 1"
+      ).get() as { codigo?: string } | undefined;
+      let nextNum = 4140001;
+      if (row && row.codigo) {
+        const num = parseInt(row.codigo, 10);
+        if (!isNaN(num) && num >= 4140001) {
+          nextNum = num + 1;
+        }
+      }
+      codigo = String(nextNum);
+    } catch {
+      codigo = '4140001';
+    }
+  } else {
+    // Preserva o código digitado pelo usuário (numérico de 7 dígitos ou formato próprio)
+    codigo = String(codigo).trim();
+  }
+
+  const custoFinal = custo_unitario !== undefined && custo_unitario !== null && custo_unitario !== ''
+    ? Number(custo_unitario)
+    : (valor_unitario ? Number(valor_unitario) : 0);
+  const valorFinal = valor_unitario !== undefined && valor_unitario !== null && valor_unitario !== ''
+    ? Number(valor_unitario)
+    : custoFinal;
+
   try {
     const stmt = db.prepare(`
-      INSERT INTO produtos (codigo, nome, descricao, unidade_medida, tipo, controla_validade, estoque_minimo, estoque_maximo, quantidade_atual, valor_unitario, localizacao, ativo)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, 1)
+      INSERT INTO produtos (
+        codigo, nome, descricao, grupo_id, unidade_medida, tipo,
+        controla_validade, estoque_minimo, estoque_maximo, quantidade_atual,
+        valor_unitario, custo_unitario, localizacao, ativo
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, 1)
     `);
     const info = stmt.run(
-      codigo.trim().toUpperCase(),
-      nome.trim(),
+      codigo,
+      nome.trim().toUpperCase(),
       descricao ? descricao.trim() : null,
+      grupo_id ? Number(grupo_id) : null,
       unidade_medida.trim().toUpperCase(),
       tipo,
       controla_validade === 0 || controla_validade === false ? 0 : 1,
       Number(estoque_minimo) || 0,
       Number(estoque_maximo) || 0,
-      valor_unitario ? Number(valor_unitario) : 0,
+      valorFinal,
+      custoFinal,
       localizacao ? localizacao.trim().toUpperCase() : null
     );
-    const novo = db.prepare('SELECT * FROM produtos WHERE id = ?').get(info.lastInsertRowid);
+    const novo = db.prepare(`
+      SELECT p.*, gp.nome as grupo_nome, gp.codigo as grupo_codigo
+      FROM produtos p
+      LEFT JOIN grupos_produtos gp ON p.grupo_id = gp.id
+      WHERE p.id = ?
+    `).get(info.lastInsertRowid);
     res.status(201).json(novo);
   } catch (err: any) {
     if (err.message?.includes('UNIQUE constraint failed')) {
@@ -1461,30 +1559,44 @@ apiRouter.put('/produtos/:id', (req, res) => {
   }
 
   const { id } = req.params;
-  const { codigo, nome, descricao, unidade_medida, tipo, controla_validade, estoque_minimo, estoque_maximo, valor_unitario, localizacao, ativo } = req.body;
+  const { codigo, nome, descricao, grupo_id, unidade_medida, tipo, controla_validade, estoque_minimo, estoque_maximo, valor_unitario, custo_unitario, localizacao, ativo } = req.body;
+
+  const custoFinal = custo_unitario !== undefined && custo_unitario !== null && custo_unitario !== ''
+    ? Number(custo_unitario)
+    : (valor_unitario ? Number(valor_unitario) : 0);
+  const valorFinal = valor_unitario !== undefined && valor_unitario !== null && valor_unitario !== ''
+    ? Number(valor_unitario)
+    : custoFinal;
 
   try {
     db.prepare(`
       UPDATE produtos
-      SET codigo = ?, nome = ?, descricao = ?, unidade_medida = ?, tipo = ?, controla_validade = ?,
-          estoque_minimo = ?, estoque_maximo = ?, valor_unitario = ?, localizacao = ?, ativo = ?
+      SET codigo = ?, nome = ?, descricao = ?, grupo_id = ?, unidade_medida = ?, tipo = ?, controla_validade = ?,
+          estoque_minimo = ?, estoque_maximo = ?, valor_unitario = ?, custo_unitario = ?, localizacao = ?, ativo = ?
       WHERE id = ?
     `).run(
-      codigo.trim().toUpperCase(),
-      nome.trim(),
+      codigo ? String(codigo).trim() : '',
+      nome.trim().toUpperCase(),
       descricao ? descricao.trim() : null,
+      grupo_id ? Number(grupo_id) : null,
       unidade_medida.trim().toUpperCase(),
       tipo,
       controla_validade === 0 || controla_validade === false ? 0 : 1,
       Number(estoque_minimo) || 0,
       Number(estoque_maximo) || 0,
-      valor_unitario !== undefined ? Number(valor_unitario) : 0,
+      valorFinal,
+      custoFinal,
       localizacao ? localizacao.trim().toUpperCase() : null,
       ativo ?? 1,
       id
     );
 
-    const atualizado = db.prepare('SELECT * FROM produtos WHERE id = ?').get(id);
+    const atualizado = db.prepare(`
+      SELECT p.*, gp.nome as grupo_nome, gp.codigo as grupo_codigo
+      FROM produtos p
+      LEFT JOIN grupos_produtos gp ON p.grupo_id = gp.id
+      WHERE p.id = ?
+    `).get(id);
     res.json(atualizado);
   } catch (err: any) {
     res.status(500).json({ error: 'Erro ao atualizar produto: ' + err.message });
@@ -3681,6 +3793,11 @@ apiRouter.get('/relatorios/catalogo', (_req, res) => {
           titulo: 'Controle de Lotes e Alertas de Validade (30 / 60 / 90 dias e Vencidos)',
           descricao: 'Monitoramento preventivo de lotes com vencimento em 90 dias (Atenção), 60 dias (Alerta), 30 dias (Crítico) e bloqueados por vencimento.',
         },
+        {
+          id: 'curva_abc',
+          titulo: 'Curva ABC por Valor de Consumo e Custo Unitário',
+          descricao: 'Classificação gerencial de insumos hospitalares (Classes A, B e C) multiplicando o custo unitário do cadastro pelo consumo total dispensado.',
+        },
       ],
     },
     {
@@ -3913,7 +4030,7 @@ apiRouter.get('/relatorios/consumo-mensal', (req, res) => {
 });
 
 apiRouter.post('/relatorios/executar', (req, res) => {
-  const { tipo_relatorio, centro_custo_id, produto_id, tipo_produto } = req.body;
+  const { tipo_relatorio, centro_custo_id, produto_id, tipo_produto, grupo_id, data_inicio, data_fim } = req.body;
 
   try {
     let titulo = '';
@@ -3923,6 +4040,138 @@ apiRouter.post('/relatorios/executar', (req, res) => {
     let resumo = '';
 
     switch (tipo_relatorio) {
+      case 'curva_abc': {
+        titulo = 'Curva ABC de Consumo e Valorização Financeira';
+        subtitulo = 'Classificação de itens por impacto financeiro (Qtd Dispensada × Custo Unitário do Produto)';
+        colunas = [
+          { chave: 'posicao', rotulo: 'Pos.', alinhamento: 'center' },
+          { chave: 'codigo', rotulo: 'Código' },
+          { chave: 'nome', rotulo: 'Descrição do Produto' },
+          { chave: 'grupo_nome', rotulo: 'Grupo de Produto' },
+          { chave: 'unidade_medida', rotulo: 'UND', alinhamento: 'center' },
+          { chave: 'qtd_consumida', rotulo: 'Qtd Dispensada', alinhamento: 'right' },
+          { chave: 'custo_unitario_formatado', rotulo: 'Custo Unit. (R$)', alinhamento: 'right' },
+          { chave: 'valor_total_formatado', rotulo: 'Valor Consumo (R$)', alinhamento: 'right' },
+          { chave: 'pct_consumo_formatada', rotulo: '% Consumo', alinhamento: 'right' },
+          { chave: 'pct_acumulada_formatada', rotulo: '% Acumulada', alinhamento: 'right' },
+          { chave: 'classe_abc', rotulo: 'Classe ABC', alinhamento: 'center' },
+        ];
+
+        let sql = `
+          SELECT 
+            p.id,
+            p.codigo,
+            p.nome,
+            p.unidade_medida,
+            p.tipo,
+            p.grupo_id,
+            COALESCE(gp.nome, 'SEM GRUPO') as grupo_nome,
+            COALESCE(p.custo_unitario, p.valor_unitario, 0) as custo_unitario,
+            COALESCE(SUM(
+              CASE 
+                WHEN m.tipo = 'saida' THEN m.quantidade
+                WHEN m.tipo = 'estorno_saida' THEN -m.quantidade
+                ELSE 0 
+              END
+            ), 0) as qtd_consumida
+          FROM produtos p
+          LEFT JOIN grupos_produtos gp ON p.grupo_id = gp.id
+          LEFT JOIN movimentacoes m ON m.produto_id = p.id AND m.tipo IN ('saida', 'estorno_saida')
+          WHERE p.ativo = 1
+        `;
+        const params: any[] = [];
+
+        if (centro_custo_id) {
+          sql += ' AND (m.centro_custo_id = ? OR m.centro_custo_id IS NULL)';
+          params.push(Number(centro_custo_id));
+        }
+
+        if (grupo_id) {
+          sql += ' AND p.grupo_id = ?';
+          params.push(Number(grupo_id));
+        }
+
+        if (tipo_produto) {
+          sql += ' AND p.tipo = ?';
+          params.push(tipo_produto);
+        }
+
+        if (data_inicio) {
+          sql += ' AND (date(m.data_movimentacao) >= date(?) OR m.data_movimentacao IS NULL)';
+          params.push(data_inicio);
+        }
+
+        if (data_fim) {
+          sql += ' AND (date(m.data_movimentacao) <= date(?) OR m.data_movimentacao IS NULL)';
+          params.push(data_fim);
+        }
+
+        sql += ' GROUP BY p.id';
+
+        const rows = db.prepare(sql).all(...params) as any[];
+
+        const itensCalculados = rows.map((r) => {
+          const custo = Number(r.custo_unitario) || 0;
+          const qtd = Math.max(0, Number(r.qtd_consumida) || 0);
+          const valorConsumo = qtd * custo;
+          return {
+            ...r,
+            custo,
+            qtd,
+            valorConsumo,
+          };
+        });
+
+        itensCalculados.sort((a, b) => b.valorConsumo - a.valorConsumo || b.qtd - a.qtd || a.nome.localeCompare(b.nome));
+
+        const totalGeralConsumo = itensCalculados.reduce((acc, it) => acc + it.valorConsumo, 0);
+
+        let acumuladoValor = 0;
+        let countA = 0;
+        let countB = 0;
+        let countC = 0;
+
+        dados = itensCalculados.map((item, idx) => {
+          acumuladoValor += item.valorConsumo;
+          const pctItem = totalGeralConsumo > 0 ? (item.valorConsumo / totalGeralConsumo) * 100 : 0;
+          const pctAcum = totalGeralConsumo > 0 ? (acumuladoValor / totalGeralConsumo) * 100 : 0;
+
+          let classe = 'C';
+          if (totalGeralConsumo > 0) {
+            if (pctAcum <= 80 || (idx === 0 && pctAcum > 80)) {
+              classe = 'A';
+              countA++;
+            } else if (pctAcum <= 95) {
+              classe = 'B';
+              countB++;
+            } else {
+              classe = 'C';
+              countC++;
+            }
+          } else {
+            classe = 'C';
+            countC++;
+          }
+
+          return {
+            posicao: idx + 1,
+            codigo: item.codigo,
+            nome: item.nome,
+            grupo_nome: item.grupo_nome,
+            unidade_medida: item.unidade_medida,
+            qtd_consumida: item.qtd.toLocaleString('pt-BR', { minimumFractionDigits: 0, maximumFractionDigits: 2 }),
+            custo_unitario_formatado: `R$ ${item.custo.toFixed(2)}`,
+            valor_total_formatado: `R$ ${item.valorConsumo.toFixed(2)}`,
+            pct_consumo_formatada: `${pctItem.toFixed(2)}%`,
+            pct_acumulada_formatada: `${Math.min(100, pctAcum).toFixed(2)}%`,
+            classe_abc: classe,
+          };
+        });
+
+        resumo = `Análise de Curva ABC: Total de R$ ${totalGeralConsumo.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} em consumo dispensado. Classe A: ${countA} itens (~80% do valor), Classe B: ${countB} itens (~15% do valor), Classe C: ${countC} itens (~5% do valor).`;
+        break;
+      }
+
       case 'posicao_atual_estoque': {
         titulo = 'Posição Geral de Estoque Físico e Financeiro';
         subtitulo = 'Demonstrativo completo de produtos ativos, saldo físico e valor patrimonial';
@@ -4886,5 +5135,666 @@ apiRouter.get('/backup/download-json', (req, res) => {
     res.send(JSON.stringify(exportData, null, 2));
   } catch (err: any) {
     res.status(500).json({ error: 'Erro ao gerar exportação JSON: ' + err.message });
+  }
+});
+
+// ============================================================================
+// MÓDULO DE INVENTÁRIO DO ESTOQUE (RECONTAGEM FÍSICA E AJUSTE DE SALDO)
+// ============================================================================
+
+// 1. Sugestão de código para novo inventário (ex: INV-2026-0001)
+apiRouter.get('/inventarios/sugestao-codigo', (req, res) => {
+  const ano = new Date().getFullYear();
+  const prefixo = `INV-${ano}`;
+  const maxRow = db.prepare(`
+    SELECT codigo 
+    FROM inventarios_estoque 
+    WHERE codigo LIKE ? 
+    ORDER BY id DESC 
+    LIMIT 1
+  `).get(`${prefixo}-%`) as { codigo?: string } | undefined;
+
+  let nextNum = 1;
+  if (maxRow && maxRow.codigo) {
+    const parts = maxRow.codigo.split('-');
+    const lastNum = parseInt(parts[parts.length - 1], 10);
+    if (!isNaN(lastNum)) {
+      nextNum = lastNum + 1;
+    }
+  }
+
+  const codigo = `${prefixo}-${String(nextNum).padStart(4, '0')}`;
+  res.json({ codigo });
+});
+
+// 2. Consulta de itens base para contagem física de um Centro de Custo
+apiRouter.get('/inventarios/itens-base', (req, res) => {
+  try {
+    const { centro_custo_id, grupo_id } = req.query;
+    // Lista todos os produtos ativos do catálogo
+    let prodQuery = `
+      SELECT 
+        p.id, p.codigo, p.nome, p.unidade_medida, p.tipo, p.controla_validade, p.quantidade_atual,
+        p.grupo_id, gp.nome as grupo_nome, gp.codigo as grupo_codigo
+      FROM produtos p
+      LEFT JOIN grupos_produtos gp ON p.grupo_id = gp.id
+      WHERE p.ativo = 1
+    `;
+    const prodParams: any[] = [];
+    if (grupo_id && String(grupo_id).trim()) {
+      prodQuery += ' AND p.grupo_id = ?';
+      prodParams.push(Number(grupo_id));
+    }
+    prodQuery += ' ORDER BY p.nome ASC';
+
+    const produtos = db.prepare(prodQuery).all(...prodParams) as any[];
+
+    const itensBase: any[] = [];
+
+    for (const prod of produtos) {
+      // Busca lotes existentes para o produto
+      const lotes = db.prepare(`
+        SELECT id, numero_lote, data_validade, quantidade_atual
+        FROM lotes_estoque
+        WHERE produto_id = ?
+        ORDER BY CASE WHEN data_validade IS NULL THEN 1 ELSE 0 END ASC, data_validade ASC, id ASC
+      `).all(prod.id) as any[];
+
+      if (lotes.length > 0) {
+        for (const lot of lotes) {
+          itensBase.push({
+            produto_id: prod.id,
+            produto_codigo: prod.codigo,
+            produto_nome: prod.nome,
+            grupo_id: prod.grupo_id,
+            grupo_nome: prod.grupo_nome,
+            grupo_codigo: prod.grupo_codigo,
+            unidade_medida: prod.unidade_medida,
+            produto_tipo: prod.tipo,
+            lote_id: lot.id,
+            numero_lote: lot.numero_lote,
+            data_validade: lot.data_validade,
+            quantidade_sistema: Number(lot.quantidade_atual || 0),
+            quantidade_fisica: Number(lot.quantidade_atual || 0),
+            diferenca: 0,
+          });
+        }
+      } else {
+        itensBase.push({
+          produto_id: prod.id,
+          produto_codigo: prod.codigo,
+          produto_nome: prod.nome,
+          grupo_id: prod.grupo_id,
+          grupo_nome: prod.grupo_nome,
+          grupo_codigo: prod.grupo_codigo,
+          unidade_medida: prod.unidade_medida,
+          produto_tipo: prod.tipo,
+          lote_id: null,
+          numero_lote: 'S/ LOTE',
+          data_validade: null,
+          quantidade_sistema: Number(prod.quantidade_atual || 0),
+          quantidade_fisica: Number(prod.quantidade_atual || 0),
+          diferenca: 0,
+        });
+      }
+    }
+
+    res.json(itensBase);
+  } catch (err: any) {
+    res.status(500).json({ error: 'Erro ao carregar itens base do inventário: ' + err.message });
+  }
+});
+
+// 3. Consulta de Inventários com Filtros
+apiRouter.get('/inventarios', (req, res) => {
+  try {
+    const { codigo, data_inicio, data_fim, finalizado, centro_custo_id } = req.query;
+
+    let sql = `
+      SELECT 
+        i.*,
+        COALESCE(e.codigo, '001') as empresa_codigo,
+        COALESCE(e.nome, 'Almoxarifado Central') as empresa_nome,
+        cc.codigo as centro_custo_codigo,
+        cc.nome as centro_custo_nome,
+        u.nome as usuario_nome,
+        (SELECT COUNT(*) FROM itens_inventario ii WHERE ii.inventario_id = i.id) as total_itens
+      FROM inventarios_estoque i
+      LEFT JOIN empresas_unidades e ON i.empresa_id = e.id
+      JOIN centros_custo cc ON i.centro_custo_id = cc.id
+      JOIN usuarios u ON i.usuario_id = u.id
+      WHERE 1=1
+    `;
+    const params: any[] = [];
+
+    if (codigo && String(codigo).trim()) {
+      sql += ' AND i.codigo LIKE ?';
+      params.push(`%${String(codigo).trim()}%`);
+    }
+
+    if (data_inicio && String(data_inicio).trim()) {
+      sql += ' AND date(i.data) >= date(?)';
+      params.push(String(data_inicio).trim());
+    }
+
+    if (data_fim && String(data_fim).trim()) {
+      sql += ' AND date(i.data) <= date(?)';
+      params.push(String(data_fim).trim());
+    }
+
+    if (finalizado && String(finalizado).toUpperCase() !== 'TODOS') {
+      const finStr = String(finalizado).toUpperCase();
+      if (finStr === 'SIM' || finStr === '1') {
+        sql += ' AND i.finalizado = 1';
+      } else if (finStr === 'NAO' || finStr === 'NÃO' || finStr === '0') {
+        sql += ' AND i.finalizado = 0';
+      }
+    }
+
+    if (centro_custo_id && String(centro_custo_id).trim()) {
+      sql += ' AND i.centro_custo_id = ?';
+      params.push(Number(centro_custo_id));
+    }
+
+    sql += ' ORDER BY i.data DESC, i.hora DESC, i.id DESC';
+
+    const inventarios = db.prepare(sql).all(...params);
+    res.json(inventarios);
+  } catch (err: any) {
+    res.status(500).json({ error: 'Erro ao consultar inventários: ' + err.message });
+  }
+});
+
+// 4. Detalhes do Inventário por ID (incluindo grade de itens)
+apiRouter.get('/inventarios/:id', (req, res) => {
+  try {
+    const invId = Number(req.params.id);
+    const inv = db.prepare(`
+      SELECT 
+        i.*,
+        COALESCE(e.codigo, '001') as empresa_codigo,
+        COALESCE(e.nome, 'Almoxarifado Central') as empresa_nome,
+        cc.codigo as centro_custo_codigo,
+        cc.nome as centro_custo_nome,
+        u.nome as usuario_nome
+      FROM inventarios_estoque i
+      LEFT JOIN empresas_unidades e ON i.empresa_id = e.id
+      JOIN centros_custo cc ON i.centro_custo_id = cc.id
+      JOIN usuarios u ON i.usuario_id = u.id
+      WHERE i.id = ?
+    `).get(invId) as any;
+
+    if (!inv) {
+      res.status(404).json({ error: 'Inventário não encontrado' });
+      return;
+    }
+
+    const itens = db.prepare(`
+      SELECT 
+        ii.*,
+        p.codigo as produto_codigo,
+        p.nome as produto_nome,
+        p.grupo_id,
+        gp.nome as grupo_nome,
+        gp.codigo as grupo_codigo,
+        p.unidade_medida,
+        p.tipo as produto_tipo,
+        COALESCE(ii.numero_lote, le.numero_lote, 'S/ LOTE') as numero_lote,
+        COALESCE(ii.data_validade, le.data_validade) as data_validade
+      FROM itens_inventario ii
+      JOIN produtos p ON ii.produto_id = p.id
+      LEFT JOIN grupos_produtos gp ON p.grupo_id = gp.id
+      LEFT JOIN lotes_estoque le ON ii.lote_id = le.id
+      WHERE ii.inventario_id = ?
+      ORDER BY p.codigo ASC, ii.id ASC
+    `).all(invId) as any[];
+
+    res.json({
+      ...inv,
+      itens,
+      total_itens: itens.length,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Erro ao carregar detalhes do inventário: ' + err.message });
+  }
+});
+
+// Helper de fechamento atômico de inventário
+function executarFechamentoInventario(invId: number, usuario: any) {
+  const inv = db.prepare('SELECT * FROM inventarios_estoque WHERE id = ?').get(invId) as any;
+  if (!inv) throw new Error('Inventário não encontrado.');
+  if (inv.finalizado === 1) throw new Error('Este inventário já foi finalizado anteriormente e é somente leitura.');
+
+  const itens = db.prepare(`
+    SELECT ii.*, p.codigo as produto_codigo, p.nome as produto_nome, p.unidade_medida, p.tipo as produto_tipo
+    FROM itens_inventario ii
+    JOIN produtos p ON ii.produto_id = p.id
+    WHERE ii.inventario_id = ?
+  `).all(invId) as any[];
+
+  const docRef = `Inventário Nº ${inv.codigo}`;
+  const now = new Date().toISOString();
+
+  // 1. Ajuste Direto de Estoque para cada item contado
+  for (const item of itens) {
+    const qtdSistema = Number(item.quantidade_sistema || 0);
+    const qtdFisica = Number(item.quantidade_fisica || 0);
+    const diferenca = qtdFisica - qtdSistema;
+
+    // Atualiza a diferença na tabela do item
+    db.prepare('UPDATE itens_inventario SET diferenca = ? WHERE id = ?').run(diferenca, item.id);
+
+    if (diferenca > 0) {
+      // Contagem Física > Estoque Sistema: Entrada por Ajuste de Inventário (+)
+      const qtdEntrada = diferenca;
+      db.prepare(`
+        INSERT INTO movimentacoes (
+          tipo, motivo_diverso, produto_id, lote_id, quantidade,
+          centro_custo_id, usuario_id, responsavel_nome, documento_referencia,
+          numero_lote, data_validade, observacao, data_movimentacao
+        ) VALUES (
+          'entrada', 'Ajuste de Inventário (+)', ?, ?, ?,
+          ?, ?, ?, ?,
+          ?, ?, ?, ?
+        )
+      `).run(
+        item.produto_id,
+        item.lote_id || null,
+        qtdEntrada,
+        inv.centro_custo_id,
+        usuario.id,
+        usuario.nome,
+        docRef,
+        item.numero_lote || null,
+        item.data_validade || null,
+        `Ajuste de inventário físico (+): Contagem física ${qtdFisica} ${item.unidade_medida} (Saldo sistema anterior: ${qtdSistema})`,
+        now
+      );
+
+      // Atualiza lote de estoque
+      if (item.lote_id) {
+        db.prepare('UPDATE lotes_estoque SET quantidade_atual = quantidade_atual + ? WHERE id = ?').run(qtdEntrada, item.lote_id);
+      } else if (item.numero_lote && item.numero_lote !== 'S/ LOTE') {
+        upsertLoteEstoque({
+          produto_id: item.produto_id,
+          numero_lote: item.numero_lote,
+          data_validade: item.data_validade,
+          quantidade: qtdEntrada,
+          documento_referencia: docRef,
+        });
+      }
+
+      // Atualiza saldo total do produto
+      db.prepare('UPDATE produtos SET quantidade_atual = quantidade_atual + ? WHERE id = ?').run(qtdEntrada, item.produto_id);
+
+    } else if (diferenca < 0) {
+      // Contagem Física < Estoque Sistema: Saída por Ajuste de Inventário (-)
+      const qtdSaida = Math.abs(diferenca);
+      db.prepare(`
+        INSERT INTO movimentacoes (
+          tipo, motivo_diverso, produto_id, lote_id, quantidade,
+          centro_custo_id, usuario_id, responsavel_nome, documento_referencia,
+          numero_lote, data_validade, observacao, data_movimentacao
+        ) VALUES (
+          'saida', 'Ajuste de Inventário (-)', ?, ?, ?,
+          ?, ?, ?, ?,
+          ?, ?, ?, ?
+        )
+      `).run(
+        item.produto_id,
+        item.lote_id || null,
+        qtdSaida,
+        inv.centro_custo_id,
+        usuario.id,
+        usuario.nome,
+        docRef,
+        item.numero_lote || null,
+        item.data_validade || null,
+        `Ajuste de inventário físico (-): Contagem física ${qtdFisica} ${item.unidade_medida} (Saldo sistema anterior: ${qtdSistema})`,
+        now
+      );
+
+      // Atualiza lote de estoque
+      if (item.lote_id) {
+        db.prepare('UPDATE lotes_estoque SET quantidade_atual = MAX(0, quantidade_atual - ?) WHERE id = ?').run(qtdSaida, item.lote_id);
+      }
+
+      // Atualiza saldo total do produto
+      db.prepare('UPDATE produtos SET quantidade_atual = MAX(0, quantidade_atual - ?) WHERE id = ?').run(qtdSaida, item.produto_id);
+    }
+  }
+
+  // 2. Efeito dos Toggles:
+  // Se Zera estoque de produtos por Lote estiver ativo: lotes com saldo que não receberam contagem são zerados
+  if (inv.zera_por_lote === 1) {
+    const countedLoteIds = itens.map((it) => it.lote_id).filter(Boolean);
+    let queryLotesNaoContados = 'SELECT * FROM lotes_estoque WHERE quantidade_atual > 0';
+    const paramsLotes: any[] = [];
+    if (countedLoteIds.length > 0) {
+      queryLotesNaoContados += ` AND id NOT IN (${countedLoteIds.map(() => '?').join(',')})`;
+      paramsLotes.push(...countedLoteIds);
+    }
+    const lotesNaoContados = db.prepare(queryLotesNaoContados).all(...paramsLotes) as any[];
+
+    for (const lot of lotesNaoContados) {
+      const saldoZerar = Number(lot.quantidade_atual);
+      if (saldoZerar > 0) {
+        db.prepare(`
+          INSERT INTO movimentacoes (
+            tipo, motivo_diverso, produto_id, lote_id, quantidade,
+            centro_custo_id, usuario_id, responsavel_nome, documento_referencia,
+            numero_lote, data_validade, observacao, data_movimentacao
+          ) VALUES (
+            'saida', 'Ajuste de Inventário (-)', ?, ?, ?,
+            ?, ?, ?, ?,
+            ?, ?, ?, ?
+          )
+        `).run(
+          lot.produto_id,
+          lot.id,
+          saldoZerar,
+          inv.centro_custo_id,
+          usuario.id,
+          usuario.nome,
+          docRef,
+          lot.numero_lote,
+          lot.data_validade,
+          `Zeramento por lote não contado no inventário (Lote: ${lot.numero_lote})`,
+          now
+        );
+
+        db.prepare('UPDATE lotes_estoque SET quantidade_atual = 0 WHERE id = ?').run(lot.id);
+        db.prepare('UPDATE produtos SET quantidade_atual = MAX(0, quantidade_atual - ?) WHERE id = ?').run(saldoZerar, lot.produto_id);
+      }
+    }
+  }
+
+  // Se Zera estoque de produtos não listados estiver ativo: produtos que não foram incluídos na contagem têm seus saldos zerados
+  if (inv.zera_nao_listados === 1) {
+    const countedProdIds = Array.from(new Set(itens.map((it) => it.produto_id)));
+    let queryProdsNaoContados = 'SELECT * FROM produtos WHERE quantidade_atual > 0';
+    const paramsProds: any[] = [];
+    if (countedProdIds.length > 0) {
+      queryProdsNaoContados += ` AND id NOT IN (${countedProdIds.map(() => '?').join(',')})`;
+      paramsProds.push(...countedProdIds);
+    }
+    const prodsNaoContados = db.prepare(queryProdsNaoContados).all(...paramsProds) as any[];
+
+    for (const prod of prodsNaoContados) {
+      const saldoZerar = Number(prod.quantidade_atual);
+      if (saldoZerar > 0) {
+        db.prepare(`
+          INSERT INTO movimentacoes (
+            tipo, motivo_diverso, produto_id, lote_id, quantidade,
+            centro_custo_id, usuario_id, responsavel_nome, documento_referencia,
+            numero_lote, data_validade, observacao, data_movimentacao
+          ) VALUES (
+            'saida', 'Ajuste de Inventário (-)', ?, NULL, ?,
+            ?, ?, ?, ?,
+            NULL, NULL, ?, ?
+          )
+        `).run(
+          prod.id,
+          saldoZerar,
+          inv.centro_custo_id,
+          usuario.id,
+          usuario.nome,
+          docRef,
+          `Zeramento de produto não listado no inventário (${prod.codigo} - ${prod.nome})`,
+          now
+        );
+
+        db.prepare('UPDATE lotes_estoque SET quantidade_atual = 0 WHERE produto_id = ?').run(prod.id);
+        db.prepare('UPDATE produtos SET quantidade_atual = 0 WHERE id = ?').run(prod.id);
+      }
+    }
+  }
+
+  // 3. Marca o inventário como finalizado
+  db.prepare('UPDATE inventarios_estoque SET finalizado = 1 WHERE id = ?').run(invId);
+}
+
+// 5. Criação de Novo Inventário (Salvar Rascunho ou Salvar e Fechar)
+apiRouter.post('/inventarios', (req, res) => {
+  const user = authenticateRequest(req);
+  if (!user || (user.perfil !== 'admin' && user.perfil !== 'almoxarife')) {
+    res.status(403).json({ error: 'Apenas Almoxarifes e Administradores podem registrar inventários de estoque.' });
+    return;
+  }
+
+  const {
+    codigo,
+    data,
+    hora,
+    empresa_id,
+    centro_custo_id,
+    zera_por_lote,
+    zera_nao_listados,
+    observacao,
+    finalizar,
+    itens,
+  } = req.body || {};
+
+  if (!centro_custo_id) {
+    res.status(400).json({ error: 'O Centro de Custo é obrigatório para registrar o inventário.' });
+    return;
+  }
+
+  const dtFinal = data && String(data).trim() ? String(data).trim() : new Date().toISOString().slice(0, 10);
+  const hrFinal = hora && String(hora).trim() ? String(hora).trim() : new Date().toTimeString().slice(0, 8);
+  const codFinal = codigo && String(codigo).trim() ? String(codigo).trim().toUpperCase() : `INV-${new Date().getFullYear()}-${Date.now().toString().slice(-4)}`;
+
+  try {
+    const result = runInTransaction(() => {
+      // Insere o inventário
+      const info = db.prepare(`
+        INSERT INTO inventarios_estoque (
+          codigo, data, hora, empresa_id, centro_custo_id,
+          zera_por_lote, zera_nao_listados, observacao, finalizado, usuario_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
+      `).run(
+        codFinal,
+        dtFinal,
+        hrFinal,
+        empresa_id ? Number(empresa_id) : (user.empresa_id || 1),
+        Number(centro_custo_id),
+        zera_por_lote ? 1 : 0,
+        zera_nao_listados ? 1 : 0,
+        observacao || null,
+        user.id
+      );
+
+      const invId = Number(info.lastInsertRowid);
+
+      // Insere itens do inventário
+      if (Array.isArray(itens) && itens.length > 0) {
+        const insertItem = db.prepare(`
+          INSERT INTO itens_inventario (
+            inventario_id, produto_id, lote_id, numero_lote, data_validade,
+            quantidade_sistema, quantidade_fisica, diferenca
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `);
+
+        for (const it of itens) {
+          const qtdSis = Number(it.quantidade_sistema || 0);
+          const qtdFis = Number(it.quantidade_fisica !== undefined ? it.quantidade_fisica : qtdSis);
+          const dif = qtdFis - qtdSis;
+
+          insertItem.run(
+            invId,
+            Number(it.produto_id),
+            it.lote_id ? Number(it.lote_id) : null,
+            it.numero_lote || null,
+            it.data_validade || null,
+            qtdSis,
+            qtdFis,
+            dif
+          );
+        }
+      }
+
+      // Se a ação for "SALVAR E FECHAR", executa imediatamente a rotina atômica
+      if (finalizar) {
+        executarFechamentoInventario(invId, user);
+      }
+
+      return { id: invId, codigo: codFinal, finalizado: finalizar ? 1 : 0 };
+    });
+
+    res.status(201).json({
+      message: finalizar ? 'Inventário finalizado e ajustes de estoque aplicados com sucesso!' : 'Inventário salvo como rascunho com sucesso!',
+      ...result,
+    });
+  } catch (err: any) {
+    res.status(400).json({ error: 'Erro ao registrar inventário: ' + err.message });
+  }
+});
+
+// 6. Atualização de Inventário Existente (Salvar Rascunho ou Salvar e Fechar)
+apiRouter.put('/inventarios/:id', (req, res) => {
+  const user = authenticateRequest(req);
+  if (!user || (user.perfil !== 'admin' && user.perfil !== 'almoxarife')) {
+    res.status(403).json({ error: 'Apenas Almoxarifes e Administradores podem alterar inventários.' });
+    return;
+  }
+
+  const invId = Number(req.params.id);
+  const existing = db.prepare('SELECT * FROM inventarios_estoque WHERE id = ?').get(invId) as any;
+  if (!existing) {
+    res.status(404).json({ error: 'Inventário não encontrado' });
+    return;
+  }
+
+  if (existing.finalizado === 1) {
+    res.status(400).json({ error: 'Inventário já finalizado. Registros concluídos são somente leitura.' });
+    return;
+  }
+
+  const {
+    data,
+    hora,
+    centro_custo_id,
+    zera_por_lote,
+    zera_nao_listados,
+    observacao,
+    finalizar,
+    itens,
+  } = req.body || {};
+
+  try {
+    runInTransaction(() => {
+      db.prepare(`
+        UPDATE inventarios_estoque
+        SET data = COALESCE(?, data),
+            hora = COALESCE(?, hora),
+            centro_custo_id = COALESCE(?, centro_custo_id),
+            zera_por_lote = ?,
+            zera_nao_listados = ?,
+            observacao = ?
+        WHERE id = ?
+      `).run(
+        data || null,
+        hora || null,
+        centro_custo_id ? Number(centro_custo_id) : null,
+        zera_por_lote ? 1 : 0,
+        zera_nao_listados ? 1 : 0,
+        observacao !== undefined ? observacao : existing.observacao,
+        invId
+      );
+
+      // Atualiza itens: apaga os itens anteriores e recria com os dados digitados
+      if (Array.isArray(itens)) {
+        db.prepare('DELETE FROM itens_inventario WHERE inventario_id = ?').run(invId);
+
+        const insertItem = db.prepare(`
+          INSERT INTO itens_inventario (
+            inventario_id, produto_id, lote_id, numero_lote, data_validade,
+            quantidade_sistema, quantidade_fisica, diferenca
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `);
+
+        for (const it of itens) {
+          const qtdSis = Number(it.quantidade_sistema || 0);
+          const qtdFis = Number(it.quantidade_fisica !== undefined ? it.quantidade_fisica : qtdSis);
+          const dif = qtdFis - qtdSis;
+
+          insertItem.run(
+            invId,
+            Number(it.produto_id),
+            it.lote_id ? Number(it.lote_id) : null,
+            it.numero_lote || null,
+            it.data_validade || null,
+            qtdSis,
+            qtdFis,
+            dif
+          );
+        }
+      }
+
+      // Se solicitado finalizar:
+      if (finalizar) {
+        executarFechamentoInventario(invId, user);
+      }
+    });
+
+    res.json({
+      message: finalizar ? 'Inventário finalizado e ajustes de saldo aplicados com sucesso!' : 'Inventário atualizado com sucesso!',
+      id: invId,
+      finalizado: finalizar ? 1 : 0,
+    });
+  } catch (err: any) {
+    res.status(400).json({ error: 'Erro ao atualizar inventário: ' + err.message });
+  }
+});
+
+// 7. Ação explícita de Fechamento de Inventário
+apiRouter.post('/inventarios/:id/fechar', (req, res) => {
+  const user = authenticateRequest(req);
+  if (!user || (user.perfil !== 'admin' && user.perfil !== 'almoxarife')) {
+    res.status(403).json({ error: 'Apenas Almoxarifes e Administradores podem finalizar inventários.' });
+    return;
+  }
+
+  const invId = Number(req.params.id);
+
+  try {
+    runInTransaction(() => {
+      executarFechamentoInventario(invId, user);
+    });
+
+    res.json({ message: 'Inventário concluído e fechado com sucesso! Saldos ajustados atomicamente.' });
+  } catch (err: any) {
+    res.status(400).json({ error: 'Erro ao finalizar inventário: ' + err.message });
+  }
+});
+
+// 8. Exclusão de Inventário em Rascunho
+apiRouter.delete('/inventarios/:id', (req, res) => {
+  const user = authenticateRequest(req);
+  if (!user || (user.perfil !== 'admin' && user.perfil !== 'almoxarife')) {
+    res.status(403).json({ error: 'Permissão negada.' });
+    return;
+  }
+
+  const invId = Number(req.params.id);
+  const existing = db.prepare('SELECT * FROM inventarios_estoque WHERE id = ?').get(invId) as any;
+  if (!existing) {
+    res.status(404).json({ error: 'Inventário não encontrado' });
+    return;
+  }
+
+  if (existing.finalizado === 1) {
+    res.status(400).json({ error: 'Inventários finalizados não podem ser excluídos por exigência de auditoria e conformidade fiscal.' });
+    return;
+  }
+
+  try {
+    runInTransaction(() => {
+      db.prepare('DELETE FROM itens_inventario WHERE inventario_id = ?').run(invId);
+      db.prepare('DELETE FROM inventarios_estoque WHERE id = ?').run(invId);
+    });
+    res.json({ message: 'Inventário em rascunho excluído com sucesso.' });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Erro ao excluir inventário: ' + err.message });
   }
 });

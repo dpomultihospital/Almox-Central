@@ -96,25 +96,39 @@ CREATE TABLE IF NOT EXISTS fornecedores_entidades (
     criado_em DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+-- 4.1 TABELA DE GRUPOS DE PRODUTOS
+CREATE TABLE IF NOT EXISTS grupos_produtos (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    codigo TEXT UNIQUE,
+    nome TEXT NOT NULL,
+    tipo_padrao TEXT NOT NULL DEFAULT 'consumivel' CHECK (tipo_padrao IN ('consumivel', 'nao_consumivel')),
+    ativo INTEGER NOT NULL DEFAULT 1
+);
+CREATE INDEX IF NOT EXISTS idx_grupos_produtos_codigo ON grupos_produtos (codigo);
+CREATE INDEX IF NOT EXISTS idx_grupos_produtos_ativo ON grupos_produtos (ativo);
+
 -- 5. TABELA DE PRODUTOS / ITENS DO CATÁLOGO (CÓDIGO ÚNICO DE ESTOQUE)
 CREATE TABLE IF NOT EXISTS produtos (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    codigo TEXT UNIQUE NOT NULL,             -- Ex: 'MAT-0012', 'PROD-0045' (Código Único no Estoque)
+    codigo TEXT UNIQUE NOT NULL,             -- Ex: '4149881', '4149745' (7 dígitos legados ou customizado)
     nome TEXT NOT NULL,
     descricao TEXT,
-    unidade_medida TEXT NOT NULL,            -- 'UN', 'CX', 'PCT', 'L', 'KG', 'FR', 'AMP'
+    grupo_id INTEGER REFERENCES grupos_produtos(id),
+    unidade_medida TEXT NOT NULL,            -- 'UN', 'UI', 'RO', 'PC', 'BOBINA', 'MT', 'CA', 'RESMA', 'GL', 'FR', 'LT', 'PCT', 'KIT', 'BIS', 'CT'
     tipo TEXT NOT NULL CHECK (tipo IN ('consumivel', 'nao_consumivel')),
     controla_validade INTEGER NOT NULL DEFAULT 1,
     estoque_minimo REAL NOT NULL DEFAULT 0 CHECK (estoque_minimo >= 0),
     estoque_maximo REAL NOT NULL DEFAULT 0 CHECK (estoque_maximo >= 0),
     quantidade_atual REAL NOT NULL DEFAULT 0 CHECK (quantidade_atual >= 0),
     valor_unitario REAL NOT NULL DEFAULT 0,
+    custo_unitario REAL NOT NULL DEFAULT 0,  -- Base de precificação oficial e Curva ABC
     localizacao TEXT,
     ativo INTEGER NOT NULL DEFAULT 1,
     criado_em DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_produtos_codigo ON produtos (codigo);
 CREATE INDEX IF NOT EXISTS idx_produtos_tipo ON produtos (tipo);
+CREATE INDEX IF NOT EXISTS idx_produtos_grupo ON produtos (grupo_id);
 CREATE INDEX IF NOT EXISTS idx_produtos_ativo ON produtos (ativo);
 
 -- 5.1 VÍNCULO PRODUTO X FORNECEDORES (MARCAS E NOMENCLATURAS NO MESMO CÓDIGO DE ESTOQUE)
@@ -300,3 +314,39 @@ CREATE TABLE IF NOT EXISTS itens_emprestimo_institucional (
 );
 CREATE INDEX IF NOT EXISTS idx_itens_emp_inst_emp ON itens_emprestimo_institucional (emprestimo_id);
 CREATE INDEX IF NOT EXISTS idx_itens_emp_inst_prod ON itens_emprestimo_institucional (produto_id);
+
+-- 10. TABELA DE INVENTÁRIO DO ESTOQUE (RECONTAGEM FÍSICA E AJUSTE DE SALDO)
+CREATE TABLE IF NOT EXISTS inventarios_estoque (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    codigo TEXT UNIQUE NOT NULL,
+    data DATE NOT NULL,
+    hora TIME NOT NULL,
+    empresa_id INTEGER,
+    centro_custo_id INTEGER NOT NULL REFERENCES centros_custo(id),
+    zera_por_lote INTEGER DEFAULT 0,
+    zera_nao_listados INTEGER DEFAULT 0,
+    observacao TEXT,
+    finalizado INTEGER DEFAULT 0,
+    usuario_id INTEGER NOT NULL REFERENCES usuarios(id),
+    criado_em DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_inventarios_codigo ON inventarios_estoque (codigo);
+CREATE INDEX IF NOT EXISTS idx_inventarios_data ON inventarios_estoque (data);
+CREATE INDEX IF NOT EXISTS idx_inventarios_centro_custo ON inventarios_estoque (centro_custo_id);
+CREATE INDEX IF NOT EXISTS idx_inventarios_finalizado ON inventarios_estoque (finalizado);
+
+-- 10.1 ITENS DO INVENTÁRIO (RECONTAGEM POR PRODUTO E LOTE)
+CREATE TABLE IF NOT EXISTS itens_inventario (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    inventario_id INTEGER NOT NULL REFERENCES inventarios_estoque(id) ON DELETE CASCADE,
+    produto_id INTEGER NOT NULL REFERENCES produtos(id),
+    lote_id INTEGER REFERENCES lotes_estoque(id),
+    numero_lote TEXT,
+    data_validade DATE,
+    quantidade_sistema REAL NOT NULL,
+    quantidade_fisica REAL NOT NULL,
+    diferenca REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_itens_inv_inventario ON itens_inventario (inventario_id);
+CREATE INDEX IF NOT EXISTS idx_itens_inv_produto ON itens_inventario (produto_id);
+CREATE INDEX IF NOT EXISTS idx_itens_inv_lote ON itens_inventario (lote_id);

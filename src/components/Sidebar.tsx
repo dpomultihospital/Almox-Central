@@ -16,7 +16,8 @@ import {
   LayoutGrid,
   HardDriveDownload,
   Truck,
-  PanelLeftClose
+  PanelLeftClose,
+  Boxes
 } from 'lucide-react';
 import type { Usuario, EmpresaUnidade } from '../types/index.ts';
 
@@ -70,6 +71,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
       id: 'movimentacoes',
       label: 'Movimentações Diversas',
       icon: ArrowLeftRight,
+      roles: ['admin', 'almoxarife'],
+    },
+    {
+      id: 'inventarios',
+      label: 'Inventário do Estoque',
+      icon: Boxes,
       roles: ['admin', 'almoxarife'],
     },
     {

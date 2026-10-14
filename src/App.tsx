@@ -9,6 +9,7 @@ import { EntradasView } from './components/EntradasView.tsx';
 import { ProdutosView } from './components/ProdutosView.tsx';
 import { FornecedoresView } from './components/FornecedoresView.tsx';
 import { MovimentacoesView } from './components/MovimentacoesView.tsx';
+import { InventarioView } from './components/InventarioView.tsx';
 import { CentrosCustoView } from './components/CentrosCustoView.tsx';
 import { UsuariosView } from './components/UsuariosView.tsx';
 import { RelatoriosView } from './components/RelatoriosView.tsx';
@@ -417,6 +418,17 @@ export default function App() {
               fornecedores={fornecedores}
               currentUser={currentUser}
               activeUnidade={activeUnidade}
+              onRefresh={loadData}
+              onVoltar={() => setIsGridView(true)}
+            />
+          )}
+
+          {currentTab === 'inventarios' && (
+            <InventarioView
+              currentUser={currentUser}
+              activeUnidade={activeUnidade}
+              centrosCusto={centrosCusto}
+              produtos={produtos}
               onRefresh={loadData}
               onVoltar={() => setIsGridView(true)}
             />

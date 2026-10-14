@@ -123,8 +123,14 @@ export const RelatoriosView: React.FC<RelatoriosViewProps> = ({
           badge: 'Validade / FEFO',
         },
         {
+          id: 'curva_abc',
+          titulo: '5. Curva ABC de Consumo e Custo Unitário (Classificação A / B / C)',
+          descricao: 'Classificação financeira dos insumos consumidos multiplicando o custo unitário do produto pela quantidade dispensada no período.',
+          badge: 'Curva ABC (A/B/C)',
+        },
+        {
           id: 'consumivel_vs_equipamentos',
-          titulo: '5. Relação de Materiais Consumíveis vs Equipamentos',
+          titulo: '6. Relação de Materiais Consumíveis vs Equipamentos',
           descricao: 'Classificação analítica por tipo de insumo e distribuição patrimonial no almoxarifado.',
           badge: 'Patrimonial',
         },

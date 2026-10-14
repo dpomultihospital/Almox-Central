@@ -96,11 +96,22 @@ CREATE TABLE IF NOT EXISTS fornecedores_entidades (
     criado_em DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS grupos_produtos (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    codigo TEXT UNIQUE,
+    nome TEXT NOT NULL,
+    tipo_padrao TEXT NOT NULL DEFAULT 'consumivel' CHECK (tipo_padrao IN ('consumivel', 'nao_consumivel')),
+    ativo INTEGER NOT NULL DEFAULT 1
+);
+CREATE INDEX IF NOT EXISTS idx_grupos_produtos_codigo ON grupos_produtos (codigo);
+CREATE INDEX IF NOT EXISTS idx_grupos_produtos_ativo ON grupos_produtos (ativo);
+
 CREATE TABLE IF NOT EXISTS produtos (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     codigo TEXT UNIQUE NOT NULL,
     nome TEXT NOT NULL,
     descricao TEXT,
+    grupo_id INTEGER REFERENCES grupos_produtos(id),
     unidade_medida TEXT NOT NULL,
     tipo TEXT NOT NULL CHECK (tipo IN ('consumivel', 'nao_consumivel')),
     controla_validade INTEGER NOT NULL DEFAULT 1,
@@ -108,12 +119,14 @@ CREATE TABLE IF NOT EXISTS produtos (
     estoque_maximo REAL NOT NULL DEFAULT 0 CHECK (estoque_maximo >= 0),
     quantidade_atual REAL NOT NULL DEFAULT 0 CHECK (quantidade_atual >= 0),
     valor_unitario REAL NOT NULL DEFAULT 0,
+    custo_unitario REAL NOT NULL DEFAULT 0,
     localizacao TEXT,
     ativo INTEGER NOT NULL DEFAULT 1,
     criado_em DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_produtos_codigo ON produtos (codigo);
 CREATE INDEX IF NOT EXISTS idx_produtos_tipo ON produtos (tipo);
+CREATE INDEX IF NOT EXISTS idx_produtos_grupo ON produtos (grupo_id);
 CREATE INDEX IF NOT EXISTS idx_produtos_ativo ON produtos (ativo);
 
 CREATE TABLE IF NOT EXISTS produto_fornecedores (
@@ -290,6 +303,40 @@ CREATE TABLE IF NOT EXISTS itens_emprestimo_institucional (
 );
 CREATE INDEX IF NOT EXISTS idx_itens_emp_inst_emp ON itens_emprestimo_institucional (emprestimo_id);
 CREATE INDEX IF NOT EXISTS idx_itens_emp_inst_prod ON itens_emprestimo_institucional (produto_id);
+
+CREATE TABLE IF NOT EXISTS inventarios_estoque (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    codigo TEXT UNIQUE NOT NULL,
+    data DATE NOT NULL,
+    hora TIME NOT NULL,
+    empresa_id INTEGER,
+    centro_custo_id INTEGER NOT NULL REFERENCES centros_custo(id),
+    zera_por_lote INTEGER DEFAULT 0,
+    zera_nao_listados INTEGER DEFAULT 0,
+    observacao TEXT,
+    finalizado INTEGER DEFAULT 0,
+    usuario_id INTEGER NOT NULL REFERENCES usuarios(id),
+    criado_em DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_inventarios_codigo ON inventarios_estoque (codigo);
+CREATE INDEX IF NOT EXISTS idx_inventarios_data ON inventarios_estoque (data);
+CREATE INDEX IF NOT EXISTS idx_inventarios_centro_custo ON inventarios_estoque (centro_custo_id);
+CREATE INDEX IF NOT EXISTS idx_inventarios_finalizado ON inventarios_estoque (finalizado);
+
+CREATE TABLE IF NOT EXISTS itens_inventario (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    inventario_id INTEGER NOT NULL REFERENCES inventarios_estoque(id) ON DELETE CASCADE,
+    produto_id INTEGER NOT NULL REFERENCES produtos(id),
+    lote_id INTEGER REFERENCES lotes_estoque(id),
+    numero_lote TEXT,
+    data_validade DATE,
+    quantidade_sistema REAL NOT NULL,
+    quantidade_fisica REAL NOT NULL,
+    diferenca REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_itens_inv_inventario ON itens_inventario (inventario_id);
+CREATE INDEX IF NOT EXISTS idx_itens_inv_produto ON itens_inventario (produto_id);
+CREATE INDEX IF NOT EXISTS idx_itens_inv_lote ON itens_inventario (lote_id);
 `;
 
 const FALLBACK_SEED_SQL = `
@@ -300,6 +347,9 @@ INSERT OR IGNORE INTO empresas_unidades (id, codigo, nome, cnpj, endereco, cidad
 
 INSERT OR IGNORE INTO usuarios (id, codigo, nome, login, senha_hash, cpf, email, perfil, centro_custo_id, empresa_id, ativo, ultimo_acesso) VALUES
 (1, 'USR-0001', 'Administrador do Sistema', 'admin', '240be518fabd2724ddb6f04eeb1da5967448d7e831c08c8fa822809f74c720a9', NULL, NULL, 'admin', NULL, 1, 1, CURRENT_TIMESTAMP);
+
+INSERT OR IGNORE INTO centros_custo (id, codigo, nome, departamento, responsavel, empresa_id, ativo, criado_em) VALUES
+(7, '7 - 1.02', 'ALMOXARIFADO CENTRAL', 'ALMOXARIFADO', 'Gestor de Estoque', 1, 1, CURRENT_TIMESTAMP);
 `;
 
 export function getSchemaSql(): string {
@@ -380,6 +430,8 @@ export function initDatabase() {
       // Banco existente: executa migrações primeiro para garantir novas colunas
       ensureFornecedoresSchema();
       ensureRequisicaoAuditSchema();
+      ensureInventariosSchema();
+      ensureGruposProdutosSchema();
 
       // Em seguida aplica o schema para criar quaisquer tabelas novas adicionais
       if (schemaSql) {
@@ -404,6 +456,8 @@ export function initDatabase() {
   // Garante que todas as migrações e rotinas de integridade foram consolidadas
   ensureFornecedoresSchema();
   ensureRequisicaoAuditSchema();
+  ensureInventariosSchema();
+  ensureGruposProdutosSchema();
 
   // Atualiza status de empréstimos em atraso automaticamente
   updateOverdueLoans();
@@ -864,6 +918,120 @@ export function ensureRequisicaoAuditSchema() {
 }
 
 /**
+ * Garante as tabelas inventarios_estoque e itens_inventario para o módulo de inventário físico
+ */
+export function ensureInventariosSchema() {
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS inventarios_estoque (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          codigo TEXT UNIQUE NOT NULL,
+          data DATE NOT NULL,
+          hora TIME NOT NULL,
+          empresa_id INTEGER,
+          centro_custo_id INTEGER NOT NULL REFERENCES centros_custo(id),
+          zera_por_lote INTEGER DEFAULT 0,
+          zera_nao_listados INTEGER DEFAULT 0,
+          observacao TEXT,
+          finalizado INTEGER DEFAULT 0,
+          usuario_id INTEGER NOT NULL REFERENCES usuarios(id),
+          criado_em DATETIME DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE INDEX IF NOT EXISTS idx_inventarios_codigo ON inventarios_estoque (codigo);
+      CREATE INDEX IF NOT EXISTS idx_inventarios_data ON inventarios_estoque (data);
+      CREATE INDEX IF NOT EXISTS idx_inventarios_centro_custo ON inventarios_estoque (centro_custo_id);
+      CREATE INDEX IF NOT EXISTS idx_inventarios_finalizado ON inventarios_estoque (finalizado);
+
+      CREATE TABLE IF NOT EXISTS itens_inventario (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          inventario_id INTEGER NOT NULL REFERENCES inventarios_estoque(id) ON DELETE CASCADE,
+          produto_id INTEGER NOT NULL REFERENCES produtos(id),
+          lote_id INTEGER REFERENCES lotes_estoque(id),
+          numero_lote TEXT,
+          data_validade DATE,
+          quantidade_sistema REAL NOT NULL,
+          quantidade_fisica REAL NOT NULL,
+          diferenca REAL NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_itens_inv_inventario ON itens_inventario (inventario_id);
+      CREATE INDEX IF NOT EXISTS idx_itens_inv_produto ON itens_inventario (produto_id);
+      CREATE INDEX IF NOT EXISTS idx_itens_inv_lote ON itens_inventario (lote_id);
+    `);
+  } catch (err) {
+    console.error('Erro ao garantir schema de inventários de estoque:', err);
+  }
+}
+
+/**
+ * Garante a tabela grupos_produtos, o seed dos 15 grupos oficiais e as colunas grupo_id e custo_unitario na tabela produtos
+ */
+export function ensureGruposProdutosSchema() {
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS grupos_produtos (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          codigo TEXT UNIQUE,
+          nome TEXT NOT NULL,
+          tipo_padrao TEXT NOT NULL DEFAULT 'consumivel' CHECK (tipo_padrao IN ('consumivel', 'nao_consumivel')),
+          ativo INTEGER NOT NULL DEFAULT 1
+      );
+      CREATE INDEX IF NOT EXISTS idx_grupos_produtos_codigo ON grupos_produtos (codigo);
+      CREATE INDEX IF NOT EXISTS idx_grupos_produtos_ativo ON grupos_produtos (ativo);
+    `);
+
+    // Migração de colunas na tabela produtos
+    const prodCols = new Set(
+      (db.prepare("PRAGMA table_info('produtos')").all() as Array<{ name: string }>).map((c) => c.name)
+    );
+
+    if (!prodCols.has('grupo_id')) {
+      db.exec('ALTER TABLE produtos ADD COLUMN grupo_id INTEGER REFERENCES grupos_produtos(id);');
+    }
+
+    if (!prodCols.has('custo_unitario')) {
+      db.exec('ALTER TABLE produtos ADD COLUMN custo_unitario REAL DEFAULT 0.0;');
+      db.exec('UPDATE produtos SET custo_unitario = valor_unitario WHERE (custo_unitario IS NULL OR custo_unitario = 0) AND valor_unitario IS NOT NULL;');
+    }
+
+    try {
+      db.exec('CREATE INDEX IF NOT EXISTS idx_produtos_grupo ON produtos (grupo_id);');
+    } catch {
+      // Ignora se índice já existir
+    }
+
+    // Preenche os 15 grupos oficiais
+    const insertGrupo = db.prepare(`
+      INSERT OR IGNORE INTO grupos_produtos (id, codigo, nome, tipo_padrao, ativo)
+      VALUES (?, ?, ?, ?, 1)
+    `);
+
+    const gruposOficiais = [
+      { id: 1, codigo: '01', nome: 'ALMOXARIFADO CENTRAL', tipo_padrao: 'consumivel' },
+      { id: 2, codigo: '02', nome: 'EQUIPAMENTOS DIVERSOS', tipo_padrao: 'nao_consumivel' },
+      { id: 3, codigo: '03', nome: 'EQUIPAMENTOS MEDICOS E CIRURGICOS', tipo_padrao: 'nao_consumivel' },
+      { id: 4, codigo: '04', nome: 'ESCRITORIO E INFORMATICA', tipo_padrao: 'consumivel' },
+      { id: 5, codigo: '05', nome: 'GRUPO PROVISORIO PARA AJUSTE', tipo_padrao: 'consumivel' },
+      { id: 6, codigo: '06', nome: 'IMOBILIZADO ATIVO/FIXO', tipo_padrao: 'nao_consumivel' },
+      { id: 7, codigo: '07', nome: 'INSTRUMENTAIS MEDICOS', tipo_padrao: 'nao_consumivel' },
+      { id: 8, codigo: '08', nome: 'MATERIAIS', tipo_padrao: 'consumivel' },
+      { id: 9, codigo: '09', nome: 'MATERIAIS DE LIMPEZA E DESCARTAVEIS', tipo_padrao: 'consumivel' },
+      { id: 10, codigo: '10', nome: 'MATERIAIS MEDICOS HOSPITALAR', tipo_padrao: 'consumivel' },
+      { id: 11, codigo: '11', nome: 'MATERIAIS ODONTOLOGICOS', tipo_padrao: 'consumivel' },
+      { id: 12, codigo: '12', nome: 'MATERIAL DE ENGENHARIA CLINICA', tipo_padrao: 'nao_consumivel' },
+      { id: 13, codigo: '13', nome: 'MATERIAL DE MANUTENCAO EM GERAL', tipo_padrao: 'consumivel' },
+      { id: 14, codigo: '14', nome: 'ROUPARIA E TECIDOS', tipo_padrao: 'consumivel' },
+      { id: 15, codigo: '15', nome: 'UNIFORMES', tipo_padrao: 'consumivel' },
+    ];
+
+    for (const g of gruposOficiais) {
+      insertGrupo.run(g.id, g.codigo, g.nome, g.tipo_padrao);
+    }
+  } catch (err: any) {
+    console.error('Erro ao garantir schema de grupos de produtos:', err.message);
+  }
+}
+
+/**
  * Atualiza dinamicamente status dos empréstimos cuja data prevista já expirou
  */
 export function updateOverdueLoans() {
@@ -909,6 +1077,8 @@ export function resetDatabase() {
     // Desativa temporariamente chaves para limpar tabelas
     db.exec('PRAGMA foreign_keys = OFF;');
     db.exec(`
+      DROP TABLE IF EXISTS itens_inventario;
+      DROP TABLE IF EXISTS inventarios_estoque;
       DROP TABLE IF EXISTS itens_emprestimo_institucional;
       DROP TABLE IF EXISTS emprestimos_institucionais;
       DROP TABLE IF EXISTS emprestimos;
@@ -919,6 +1089,7 @@ export function resetDatabase() {
       DROP TABLE IF EXISTS requisicoes;
       DROP TABLE IF EXISTS produto_fornecedores;
       DROP TABLE IF EXISTS produtos;
+      DROP TABLE IF EXISTS grupos_produtos;
       DROP TABLE IF EXISTS fornecedores_entidades;
       DROP TABLE IF EXISTS fornecedores;
       DROP TABLE IF EXISTS usuarios;
@@ -935,7 +1106,7 @@ export function resetDatabase() {
     }
 
     try {
-      db.exec("DELETE FROM sqlite_sequence WHERE name IN ('centros_custo', 'fornecedores', 'fornecedores_entidades', 'produtos', 'produto_fornecedores', 'lotes_estoque', 'requisicoes', 'itens_requisicao', 'historico_requisicoes', 'movimentacoes', 'emprestimos', 'emprestimos_institucionais', 'itens_emprestimo_institucional');");
+      db.exec("DELETE FROM sqlite_sequence WHERE name IN ('centros_custo', 'fornecedores', 'fornecedores_entidades', 'grupos_produtos', 'produtos', 'produto_fornecedores', 'lotes_estoque', 'requisicoes', 'itens_requisicao', 'historico_requisicoes', 'movimentacoes', 'emprestimos', 'emprestimos_institucionais', 'itens_emprestimo_institucional', 'inventarios_estoque', 'itens_inventario');");
     } catch {
       // Ignora se sqlite_sequence ainda não existir
     }

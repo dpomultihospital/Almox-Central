@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import {
   Package,
   Plus,
@@ -21,9 +21,11 @@ import {
   DollarSign,
   Trash2,
   Truck,
-  PackagePlus
+  PackagePlus,
+  Layers,
+  Sparkles
 } from 'lucide-react';
-import type { Produto, Fornecedor, ProdutoFornecedor, Usuario, UnidadeMedida, TipoProduto } from '../types/index.ts';
+import type { Produto, Fornecedor, ProdutoFornecedor, Usuario, UnidadeMedida, TipoProduto, GrupoProduto } from '../types/index.ts';
 import { useToast } from '../context/ToastContext.tsx';
 import { ConfirmDeleteModal } from './ConfirmDeleteModal.tsx';
 import { HelpFloatingModal } from './HelpFloatingModal.tsx';
@@ -37,6 +39,30 @@ interface ProdutosViewProps {
   onNavigate?: (tab: string) => void;
 }
 
+// Unidades de medida oficiais utilizadas
+const UNIDADES_MEDIDA_OFICIAIS: Array<{ sigla: string; nome: string }> = [
+  { sigla: 'UN', nome: 'UN - Unidade' },
+  { sigla: 'UI', nome: 'UI - Unidade Internacional' },
+  { sigla: 'RO', nome: 'RO - Rolo' },
+  { sigla: 'PC', nome: 'PC - Peça' },
+  { sigla: 'BOBINA', nome: 'BOBINA - Bobina' },
+  { sigla: 'MT', nome: 'MT - Metro' },
+  { sigla: 'CA', nome: 'CA - Caixa' },
+  { sigla: 'CX', nome: 'CX - Caixa Padrão' },
+  { sigla: 'RESMA', nome: 'RESMA - Resma' },
+  { sigla: 'GL', nome: 'GL - Galão' },
+  { sigla: 'FR', nome: 'FR - Frasco' },
+  { sigla: 'LT', nome: 'LT - Litro' },
+  { sigla: 'PCT', nome: 'PCT - Pacote' },
+  { sigla: 'KIT', nome: 'KIT - Kit Procedimento' },
+  { sigla: 'BIS', nome: 'BIS - Bisnaga' },
+  { sigla: 'CT', nome: 'CT - Cartela' },
+  { sigla: 'KG', nome: 'KG - Quilograma' },
+  { sigla: 'L', nome: 'L - Litro' },
+  { sigla: 'AMP', nome: 'AMP - Ampola' },
+  { sigla: 'ROLO', nome: 'ROLO - Rolo Hospitalar' },
+];
+
 export const ProdutosView: React.FC<ProdutosViewProps> = ({
   produtos,
   fornecedores = [],
@@ -45,11 +71,14 @@ export const ProdutosView: React.FC<ProdutosViewProps> = ({
   onVoltar,
   onNavigate,
 }) => {
+  // Grupos de Produtos do Banco
+  const [grupos, setGrupos] = useState<GrupoProduto[]>([]);
+
   // Filtros de busca
   const [filtroCodigo, setFiltroCodigo] = useState('');
   const [filtroNome, setFiltroNome] = useState('');
+  const [filtroGrupoId, setFiltroGrupoId] = useState<string>('todos');
   const [filtroTipo, setFiltroTipo] = useState<'todos' | 'consumivel' | 'nao_consumivel'>('todos');
-  const [filtroStatusEstoque, setFiltroStatusEstoque] = useState<'todos' | 'critico' | 'normal'>('todos');
   const [filtroAtivo, setFiltroAtivo] = useState<'todos' | '1' | '0'>('todos');
 
   // Controle de Formulário em Abas
@@ -69,19 +98,20 @@ export const ProdutosView: React.FC<ProdutosViewProps> = ({
   const [formCodigo, setFormCodigo] = useState('');
   const [formNome, setFormNome] = useState('');
   const [formDescricao, setFormDescricao] = useState('');
+  const [formGrupoId, setFormGrupoId] = useState<number | null>(null);
   const [formUnidadeMedida, setFormUnidadeMedida] = useState<UnidadeMedida>('UN');
   const [formTipo, setFormTipo] = useState<TipoProduto>('consumivel');
+  const [formCustoUnitario, setFormCustoUnitario] = useState<number>(0);
   const [formControlaValidade, setFormControlaValidade] = useState<number>(1);
   const [formEstoqueMinimo, setFormEstoqueMinimo] = useState<number>(10);
   const [formEstoqueMaximo, setFormEstoqueMaximo] = useState<number>(100);
   const [formQuantidadeAtual, setFormQuantidadeAtual] = useState<number>(0);
-  const [formValorUnitario, setFormValorUnitario] = useState<number>(0);
   const [formLocalizacao, setFormLocalizacao] = useState<string>('PRAT-01');
   const [formAtivo, setFormAtivo] = useState<number>(1);
 
   // Paginação
   const [currentPage, setCurrentPage] = useState(1);
-  const pageSize = 8;
+  const pageSize = 10;
   const [isProcessing, setIsProcessing] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [deletingProduto, setDeletingProduto] = useState<Produto | null>(null);
@@ -89,21 +119,44 @@ export const ProdutosView: React.FC<ProdutosViewProps> = ({
   const { toast } = useToast();
   const canEdit = currentUser && (currentUser.perfil === 'admin' || currentUser.perfil === 'almoxarife');
 
+  // Carrega lista de 15 grupos oficiais do backend
+  useEffect(() => {
+    fetch('/api/grupos-produtos')
+      .then((r) => r.json())
+      .then((data) => {
+        if (Array.isArray(data)) {
+          setGrupos(data);
+        }
+      })
+      .catch((err) => {
+        console.error('Erro ao carregar grupos de produtos:', err);
+      });
+  }, []);
+
   // Filtragem dos produtos
   const filteredProdutos = useMemo(() => {
     return produtos.filter((p) => {
-      if (filtroCodigo && !p.codigo.toLowerCase().includes(filtroCodigo.toLowerCase())) return false;
-      if (filtroNome && !p.nome.toLowerCase().includes(filtroNome.toLowerCase())) return false;
-      if (filtroTipo !== 'todos' && p.tipo !== filtroTipo) return false;
-      if (filtroStatusEstoque === 'critico' && p.quantidade_atual > p.estoque_minimo) return false;
-      if (filtroStatusEstoque === 'normal' && p.quantidade_atual <= p.estoque_minimo) return false;
+      if (filtroCodigo && !p.codigo.toLowerCase().includes(filtroCodigo.toLowerCase().trim())) {
+        return false;
+      }
+      if (filtroNome && !p.nome.toLowerCase().includes(filtroNome.toLowerCase().trim())) {
+        return false;
+      }
+      if (filtroGrupoId !== 'todos') {
+        if (String(p.grupo_id || '') !== String(filtroGrupoId)) {
+          return false;
+        }
+      }
+      if (filtroTipo !== 'todos' && p.tipo !== filtroTipo) {
+        return false;
+      }
       if (filtroAtivo !== 'todos') {
         const val = filtroAtivo === '1' ? 1 : 0;
         if (p.ativo !== val) return false;
       }
       return true;
     });
-  }, [produtos, filtroCodigo, filtroNome, filtroTipo, filtroStatusEstoque, filtroAtivo]);
+  }, [produtos, filtroCodigo, filtroNome, filtroGrupoId, filtroTipo, filtroAtivo]);
 
   const totalPages = Math.ceil(filteredProdutos.length / pageSize) || 1;
   const paginatedProdutos = useMemo(() => {
@@ -111,19 +164,45 @@ export const ProdutosView: React.FC<ProdutosViewProps> = ({
     return filteredProdutos.slice(start, start + pageSize);
   }, [filteredProdutos, currentPage, pageSize]);
 
-  const handleNovo = () => {
+  // Ao selecionar um Grupo no formulário, sugere o tipo_padrao correspondente
+  const handleGrupoChange = (novoGrupoId: number | null) => {
+    setFormGrupoId(novoGrupoId);
+    if (novoGrupoId) {
+      const g = grupos.find((item) => item.id === novoGrupoId);
+      if (g) {
+        setFormTipo(g.tipo_padrao);
+        setFormControlaValidade(g.tipo_padrao === 'consumivel' ? 1 : 0);
+      }
+    }
+  };
+
+  const handleNovo = async () => {
     setFormMode('create');
     setEditingId(null);
-    setFormCodigo(`MAT-00${produtos.length + 1}`);
+
+    // Sugere código sequencial numérico de 7 dígitos no padrão 414XXXX
+    let codigoSugerido = '4140001';
+    try {
+      const res = await fetch('/api/produtos/sugestao-codigo');
+      if (res.ok) {
+        const data = await res.json();
+        if (data.codigo) codigoSugerido = data.codigo;
+      }
+    } catch {
+      codigoSugerido = '4140001';
+    }
+
+    setFormCodigo(codigoSugerido);
     setFormNome('');
     setFormDescricao('');
+    setFormGrupoId(1); // 1 = ALMOXARIFADO CENTRAL (consumivel)
     setFormUnidadeMedida('UN');
     setFormTipo('consumivel');
+    setFormCustoUnitario(0);
     setFormControlaValidade(1);
-    setFormEstoqueMinimo(20);
-    setFormEstoqueMaximo(200);
+    setFormEstoqueMinimo(10);
+    setFormEstoqueMaximo(100);
     setFormQuantidadeAtual(0);
-    setFormValorUnitario(0);
     setFormLocalizacao('PRAT-A1');
     setFormAtivo(1);
     setActiveFormTab('dados_principais');
@@ -137,13 +216,14 @@ export const ProdutosView: React.FC<ProdutosViewProps> = ({
     setFormCodigo(p.codigo);
     setFormNome(p.nome);
     setFormDescricao(p.descricao || '');
+    setFormGrupoId(p.grupo_id || null);
     setFormUnidadeMedida(p.unidade_medida);
     setFormTipo(p.tipo);
+    setFormCustoUnitario(p.custo_unitario ?? p.valor_unitario ?? 0);
     setFormControlaValidade(p.controla_validade === undefined ? (p.tipo === 'consumivel' ? 1 : 0) : p.controla_validade);
     setFormEstoqueMinimo(p.estoque_minimo);
     setFormEstoqueMaximo(p.estoque_maximo);
     setFormQuantidadeAtual(p.quantidade_atual);
-    setFormValorUnitario(p.valor_unitario || 0);
     setFormLocalizacao(p.localizacao || 'Almox. Central');
     setFormAtivo(p.ativo);
     setActiveFormTab('dados_principais');
@@ -163,8 +243,8 @@ export const ProdutosView: React.FC<ProdutosViewProps> = ({
       return;
     }
 
-    if (!formCodigo || !formNome || !formUnidadeMedida || !formTipo) {
-      const msg = 'Código Único Interno, Descrição Padrão, Unidade de Medida e Tipo são obrigatórios.';
+    if (!formNome.trim() || !formUnidadeMedida || !formTipo) {
+      const msg = 'Descrição do Produto, Unidade de Medida e Tipo são obrigatórios.';
       setErrorMsg(msg);
       toast.error('Campos Obrigatórios', msg);
       setActiveFormTab('dados_principais');
@@ -176,15 +256,17 @@ export const ProdutosView: React.FC<ProdutosViewProps> = ({
 
     try {
       const payload = {
-        codigo: formCodigo.trim().toUpperCase(),
-        nome: formNome.trim(),
+        codigo: formCodigo ? formCodigo.trim() : '',
+        nome: formNome.trim().toUpperCase(),
         descricao: formDescricao ? formDescricao.trim() : null,
-        unidade_medida: formUnidadeMedida,
+        grupo_id: formGrupoId ? Number(formGrupoId) : null,
+        unidade_medida: formUnidadeMedida.trim().toUpperCase(),
         tipo: formTipo,
+        custo_unitario: Number(formCustoUnitario) || 0,
+        valor_unitario: Number(formCustoUnitario) || 0,
         controla_validade: Number(formControlaValidade),
         estoque_minimo: Number(formEstoqueMinimo) || 0,
         estoque_maximo: Number(formEstoqueMaximo) || 0,
-        valor_unitario: Number(formValorUnitario) || 0,
         localizacao: formLocalizacao ? formLocalizacao.trim().toUpperCase() : null,
         ativo: formAtivo,
       };
@@ -209,7 +291,7 @@ export const ProdutosView: React.FC<ProdutosViewProps> = ({
       if (formMode === 'create') {
         toast.success(
           'Produto Cadastrado com Sucesso',
-          `O item "${payload.codigo} - ${payload.nome}" foi adicionado ao catálogo.`
+          `O item "${data.codigo || payload.codigo} - ${payload.nome}" foi registrado no catálogo.`
         );
       } else {
         toast.success(
@@ -244,17 +326,13 @@ export const ProdutosView: React.FC<ProdutosViewProps> = ({
       });
       const data = await res.json();
       if (!res.ok) {
-        throw new Error(data.error || 'Erro ao excluir produto.');
+        throw new Error(data.error || 'Não foi possível excluir o produto.');
       }
-
-      toast.success(
-        'Produto Excluído',
-        data.message || `O item "${deletingProduto.codigo} - ${deletingProduto.nome}" foi removido do catálogo.`
-      );
+      toast.success('Produto Excluído', data.message || `Produto "${deletingProduto.nome}" removido do catálogo.`);
+      setDeletingProduto(null);
       if (editingId === deletingProduto.id) {
         setIsFormOpen(false);
       }
-      setDeletingProduto(null);
       onRefresh();
     } catch (err: any) {
       toast.error('Erro ao Excluir Produto', err.message || 'Não foi possível excluir o produto.');
@@ -283,16 +361,16 @@ export const ProdutosView: React.FC<ProdutosViewProps> = ({
         },
         body: JSON.stringify({
           fornecedor_id: vincFornecedorId,
-          marca: vincMarca.trim() || null,
-          nomenclatura_fornecedor: vincNomenclatura.trim() || null,
-          codigo_referencia_fornecedor: vincCodigoRef.trim() || null,
+          marca: vincMarca ? vincMarca.trim().toUpperCase() : null,
+          nomenclatura_fornecedor: vincNomenclatura ? vincNomenclatura.trim().toUpperCase() : null,
+          codigo_referencia_fornecedor: vincCodigoRef ? vincCodigoRef.trim() : null,
         }),
       });
       const data = await res.json();
       if (!res.ok) {
         throw new Error(data.error || 'Erro ao vincular fornecedor.');
       }
-      toast.success('Fornecedor / Marca Vinculado', data.message || 'Fornecedor vinculado ao mesmo código de produto.');
+      toast.success('Fornecedor Vinculado', 'O fornecedor e a marca foram vinculados ao código do produto.');
       setVincFornecedorId(0);
       setVincMarca('');
       setVincNomenclatura('');
@@ -332,41 +410,41 @@ export const ProdutosView: React.FC<ProdutosViewProps> = ({
           </div>
           <div>
             <h1 className="text-lg font-bold text-slate-800 tracking-tight">
-              Catálogo de Produtos (Código Interno Unificado)
+              Consulta de Produtos & Catálogo
             </h1>
             <p className="text-xs text-slate-500">
-              Gestão do catálogo padronizado, controle de lotes/validade e vínculo multifornecedor
+              Códigos numéricos originais, grupos de produtos, custo unitário e classificação contábil
             </p>
           </div>
         </div>
 
         <div className="flex items-center gap-2">
           <HelpFloatingModal
-            title="Ajuda & Regras — Catálogo de Produtos (Código Único)"
-            subtitle="Passo 2 do Cadastro • Regras de Unificação Multifornecedor e Validade de Lotes"
+            title="Ajuda & Regras — Catálogo de Produtos"
+            subtitle="Padrão Numérico de 7 Dígitos • Grupos Oficiais • Base de Custo para Curva ABC"
             currentStep={2}
             onNavigate={onNavigate}
             sections={[
               {
-                title: 'Regra de Código Único de Produto (Multifornecedor)',
-                badge: 'Código Unificado',
+                title: 'Código Interno Numérico (7 Dígitos)',
+                badge: 'Padrão 414XXXX / 415XXXX',
                 tone: 'blue',
                 description:
-                  'Independentemente de fornecedores diferentes venderem com marcas ou nomenclaturas distintas (ex: "Papel A4 Chamex" vs "Papel A4 Report"), vincule todas as entradas ao mesmo Código de Produto Interno (ex: PROD-0045 - Papel A4 75g). O nome/marca comercial da NF é salvo apenas no histórico da entrada, mantendo o saldo unificado.',
+                  'O sistema aceita diretamente códigos numéricos puros (ex: 4149881, 4149745) sem impor prefixos alfanuméricos. Ao deixar o código em branco, o próximo número sequencial será gerado automaticamente.',
               },
               {
-                title: 'Controle de Lote e Alertas de Validade (90 / 60 / 30 dias)',
-                badge: 'Monitoramento FEFO',
+                title: 'Grupos Oficiais e Sugestão de Tipo',
+                badge: '15 Grupos Oficiais',
+                tone: 'teal',
+                description:
+                  'Ao selecionar um dos 15 Grupos de Produtos, o tipo (Consumível vs Não Consumível) é sugerido de forma automática com base na diretriz do grupo, permitindo alteração manual se necessário.',
+              },
+              {
+                title: 'Custo Unitário e Curva ABC',
+                badge: 'Precificação Oficial',
                 tone: 'amber',
                 description:
-                  'O sistema monitora automaticamente o vencimento dos lotes em estoque: Atenção em 90 dias (Amarelo), Alerta em 60 dias (Laranja) e Crítico em 30 dias (Vermelho).',
-              },
-              {
-                title: 'Bloqueio Automático por Vencimento',
-                badge: 'Segurança Assistencial',
-                tone: 'rose',
-                description:
-                  'Lotes cuja data de validade já expirou são bloqueados sumariamente para requisições de consumo ou transferências. A única movimentação permitida para lotes vencidos é a "Saída por Vencimento/Descarte".',
+                  'O Custo Unitário registrado no cadastro serve como base contábil para o cálculo da Curva ABC por valor financeiro de consumo (Qtd Dispensada × Custo Unitário).',
               },
             ]}
           />
@@ -384,7 +462,7 @@ export const ProdutosView: React.FC<ProdutosViewProps> = ({
         </div>
       </div>
 
-      {/* Formulário em Abas */}
+      {/* Formulário em Abas: Cadastro / Edição / Visualização */}
       {isFormOpen && (
         <div className="bg-white rounded-xl border border-slate-200 shadow-md overflow-hidden animate-fadeIn">
           <div className="px-6 py-4 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
@@ -400,7 +478,7 @@ export const ProdutosView: React.FC<ProdutosViewProps> = ({
             <button
               type="button"
               onClick={() => setIsFormOpen(false)}
-              className="text-xs font-semibold text-slate-500 hover:text-slate-800 flex items-center gap-1"
+              className="text-xs font-semibold text-slate-500 hover:text-slate-800 flex items-center gap-1 cursor-pointer"
             >
               <ArrowLeft className="w-4 h-4" />
               <span>Voltar para Listagem</span>
@@ -413,7 +491,7 @@ export const ProdutosView: React.FC<ProdutosViewProps> = ({
             </div>
           )}
 
-          {/* Abas */}
+          {/* Abas do Formulário */}
           <div className="flex flex-wrap border-b border-slate-200 px-6 pt-2 bg-slate-50/50">
             <button
               type="button"
@@ -424,7 +502,7 @@ export const ProdutosView: React.FC<ProdutosViewProps> = ({
                   : 'border-transparent text-slate-500 hover:text-slate-700'
               }`}
             >
-              1. Código Único & Dados Padrão
+              1. Código, Grupo & Descrição
             </button>
 
             <button
@@ -436,7 +514,7 @@ export const ProdutosView: React.FC<ProdutosViewProps> = ({
                   : 'border-transparent text-slate-500 hover:text-slate-700'
               }`}
             >
-              2. Estoque Mínimo / Máximo
+              2. Custos & Estoque Mín/Máx
             </button>
 
             <button
@@ -465,7 +543,7 @@ export const ProdutosView: React.FC<ProdutosViewProps> = ({
                   : 'border-transparent text-slate-500 hover:text-slate-700'
               }`}
             >
-              <span>4. Fornecedores & Marcas (Mesmo Código)</span>
+              <span>4. Fornecedores & Marcas</span>
               {editingProdutoObj?.fornecedores_vinculados && (
                 <span className="bg-teal-100 text-teal-800 px-1.5 py-0.5 rounded-full text-[10px]">
                   {editingProdutoObj.fornecedores_vinculados.length}
@@ -490,75 +568,55 @@ export const ProdutosView: React.FC<ProdutosViewProps> = ({
             {/* ABA 1: DADOS PRINCIPAIS */}
             {activeFormTab === 'dados_principais' && (
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                {/* Código */}
                 <div>
-                  <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wider mb-1">
-                    Código Único Interno *
-                  </label>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wider">
+                      Código Interno *
+                    </label>
+                    <span className="text-[10px] text-teal-700 font-medium">Ex: 4149881 / 414XXXX</span>
+                  </div>
                   <input
                     type="text"
                     value={formCodigo}
                     onChange={(e) => setFormCodigo(e.target.value)}
                     disabled={formMode === 'view'}
-                    className="w-full px-3 py-2 bg-[#f1f3f5] border border-slate-300 rounded text-xs text-slate-800 font-mono focus:bg-white focus:border-teal-500 shadow-inner"
-                    placeholder="ex: MAT-001 ou PROD-0045"
-                    required
+                    className="w-full px-3 py-2 bg-[#f1f3f5] border border-slate-300 rounded text-xs text-slate-800 font-mono font-bold focus:bg-white focus:border-teal-500 shadow-inner"
+                    placeholder="Deixe em branco para gerar automático"
                   />
+                  <p className="text-[10px] text-slate-500 mt-1">
+                    Aceita códigos numéricos legados de 7 dígitos ou gera automaticamente sequencial.
+                  </p>
                 </div>
 
-                <div className="md:col-span-2">
-                  <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wider mb-1">
-                    Descrição Padrão no Catálogo *
-                  </label>
-                  <input
-                    type="text"
-                    value={formNome}
-                    onChange={(e) => setFormNome(e.target.value)}
-                    disabled={formMode === 'view'}
-                    className="w-full px-3 py-2 bg-[#f1f3f5] border border-slate-300 rounded text-xs text-slate-800 focus:bg-white focus:border-teal-500 shadow-inner"
-                    placeholder="ex: Papel A4 75g / Seringa Descartável 10ml"
-                    required
-                  />
-                </div>
-
-                <div className="md:col-span-3">
-                  <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wider mb-1">
-                    Especificação Técnica Detalhada
-                  </label>
-                  <textarea
-                    value={formDescricao}
-                    onChange={(e) => setFormDescricao(e.target.value)}
-                    disabled={formMode === 'view'}
-                    rows={2}
-                    className="w-full px-3 py-2 bg-[#f1f3f5] border border-slate-300 rounded text-xs text-slate-800 focus:bg-white focus:border-teal-500 shadow-inner"
-                    placeholder="Especificações clínicas, fabricante padrão, registro ANVISA..."
-                  />
-                </div>
-
+                {/* Grupo de Produto */}
                 <div>
                   <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wider mb-1">
-                    Unidade de Medida *
+                    Grupo de Produto *
                   </label>
                   <select
-                    value={formUnidadeMedida}
-                    onChange={(e) => setFormUnidadeMedida(e.target.value as UnidadeMedida)}
+                    value={formGrupoId || ''}
+                    onChange={(e) => handleGrupoChange(e.target.value ? Number(e.target.value) : null)}
                     disabled={formMode === 'view'}
-                    className="w-full px-3 py-2 bg-[#f1f3f5] border border-slate-300 rounded text-xs text-slate-800 focus:bg-white focus:border-teal-500 shadow-inner cursor-pointer"
+                    className="w-full px-3 py-2 bg-[#f1f3f5] border border-slate-300 rounded text-xs text-slate-800 focus:bg-white focus:border-teal-500 shadow-inner cursor-pointer font-medium"
+                    required
                   >
-                    <option value="UN">UN - Unidade</option>
-                    <option value="CX">CX - Caixa</option>
-                    <option value="PCT">PCT - Pacote</option>
-                    <option value="L">L - Litro</option>
-                    <option value="KG">KG - Quilograma</option>
-                    <option value="FR">FR - Frasco</option>
-                    <option value="AMP">AMP - Ampola</option>
-                    <option value="ROLO">ROLO - Rolo</option>
-                    <option value="KIT">KIT - Kit Cirúrgico</option>
+                    <option value="">Selecione o Grupo de Produto...</option>
+                    {grupos.map((g) => (
+                      <option key={g.id} value={g.id}>
+                        {g.codigo ? `${g.codigo} - ` : ''}{g.nome} ({g.tipo_padrao === 'consumivel' ? 'Consumível' : 'Não Consumível'})
+                      </option>
+                    ))}
                   </select>
+                  <p className="text-[10px] text-slate-500 mt-1">
+                    Sugere automaticamente o tipo (Consumível / Não Consumível).
+                  </p>
                 </div>
 
+                {/* Tipo / Classificação */}
                 <div>
                   <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wider mb-1">
-                    Classificação / Tipo *
+                    Tipo de Item *
                   </label>
                   <select
                     value={formTipo}
@@ -568,28 +626,91 @@ export const ProdutosView: React.FC<ProdutosViewProps> = ({
                       setFormControlaValidade(novoTipo === 'consumivel' ? 1 : 0);
                     }}
                     disabled={formMode === 'view'}
-                    className="w-full px-3 py-2 bg-[#f1f3f5] border border-slate-300 rounded text-xs text-slate-800 focus:bg-white focus:border-teal-500 shadow-inner cursor-pointer"
+                    className="w-full px-3 py-2 bg-[#f1f3f5] border border-slate-300 rounded text-xs text-slate-800 focus:bg-white focus:border-teal-500 shadow-inner cursor-pointer font-medium"
                   >
-                    <option value="consumivel">Consumível (Baixa definitiva por Requisição)</option>
-                    <option value="nao_consumivel">Não Consumível (Aparelho / Equipamento p/ Empréstimo)</option>
+                    <option value="consumivel">Consumível (Dispensação / Requisição)</option>
+                    <option value="nao_consumivel">Não Consumível (Equipamento / Empréstimo)</option>
                   </select>
                 </div>
 
+                {/* Descrição Padrão (Caixa Alta) */}
+                <div className="md:col-span-3">
+                  <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wider mb-1">
+                    Descrição do Produto (Caixa Alta) *
+                  </label>
+                  <textarea
+                    rows={2}
+                    value={formNome}
+                    onChange={(e) => setFormNome(e.target.value.toUpperCase())}
+                    disabled={formMode === 'view'}
+                    className="w-full px-3 py-2 bg-[#f1f3f5] border border-slate-300 rounded text-xs text-slate-800 focus:bg-white focus:border-teal-500 shadow-inner font-mono font-medium uppercase"
+                    placeholder="EX: CANULA ENDOSCÓPICA P/ INJEÇÃO (CATETER PARA ESCLEROTERAPIA) 2.3MM X 2300MM"
+                    required
+                  />
+                  <p className="text-[10px] text-slate-500 mt-1">
+                    Campo amplo suportando descrições padronizadas completas e especificações em caixa alta.
+                  </p>
+                </div>
+
+                {/* Unidade de Medida */}
                 <div>
                   <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wider mb-1">
-                    Controle de Lote e Validade *
+                    Unidade de Medida (UND) *
                   </label>
                   <select
-                    value={formControlaValidade}
-                    onChange={(e) => setFormControlaValidade(Number(e.target.value))}
+                    value={formUnidadeMedida}
+                    onChange={(e) => setFormUnidadeMedida(e.target.value as UnidadeMedida)}
                     disabled={formMode === 'view'}
-                    className="w-full px-3 py-2 bg-[#f1f3f5] border border-slate-300 rounded text-xs text-slate-800 focus:bg-white focus:border-teal-500 shadow-inner cursor-pointer"
+                    className="w-full px-3 py-2 bg-[#f1f3f5] border border-slate-300 rounded text-xs text-slate-800 focus:bg-white focus:border-teal-500 shadow-inner cursor-pointer font-bold"
                   >
-                    <option value={1}>Sim - Obrigatório Lote e Validade na Entrada</option>
-                    <option value={0}>Opcional - Item não perecível</option>
+                    {UNIDADES_MEDIDA_OFICIAIS.map((u) => (
+                      <option key={u.sigla} value={u.sigla}>
+                        {u.nome}
+                      </option>
+                    ))}
                   </select>
                 </div>
 
+                {/* Custo Unitário */}
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wider mb-1">
+                    Custo Unitário (R$) — Base Curva ABC *
+                  </label>
+                  <div className="relative">
+                    <span className="absolute left-3 top-2 text-xs font-bold text-slate-500">R$</span>
+                    <input
+                      type="number"
+                      step="0.0001"
+                      min="0"
+                      value={formCustoUnitario}
+                      onChange={(e) => setFormCustoUnitario(Number(e.target.value))}
+                      disabled={formMode === 'view'}
+                      className="w-full pl-9 pr-3 py-2 bg-[#f1f3f5] border border-slate-300 rounded text-xs text-slate-800 font-mono font-bold focus:bg-white focus:border-teal-500 shadow-inner"
+                      placeholder="0.00"
+                    />
+                  </div>
+                  <p className="text-[10px] text-slate-500 mt-1">
+                    Base oficial para cálculo financeiro do consumo na Curva ABC.
+                  </p>
+                </div>
+
+                {/* Ativo (SIM / NÃO) */}
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wider mb-1">
+                    Item Ativo no Catálogo? *
+                  </label>
+                  <select
+                    value={formAtivo}
+                    onChange={(e) => setFormAtivo(Number(e.target.value))}
+                    disabled={formMode === 'view'}
+                    className="w-full px-3 py-2 bg-[#f1f3f5] border border-slate-300 rounded text-xs text-slate-800 focus:bg-white focus:border-teal-500 shadow-inner cursor-pointer font-medium"
+                  >
+                    <option value={1}>SIM (Ativo)</option>
+                    <option value={0}>NÃO (Inativo / Bloqueado)</option>
+                  </select>
+                </div>
+
+                {/* Localização */}
                 <div>
                   <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wider mb-1">
                     Localização no Almoxarifado
@@ -600,28 +721,44 @@ export const ProdutosView: React.FC<ProdutosViewProps> = ({
                     onChange={(e) => setFormLocalizacao(e.target.value)}
                     disabled={formMode === 'view'}
                     className="w-full px-3 py-2 bg-[#f1f3f5] border border-slate-300 rounded text-xs text-slate-800 focus:bg-white focus:border-teal-500 shadow-inner"
-                    placeholder="ex: Prateleira B-04"
+                    placeholder="ex: Prateleira B-04 / Gaveta 02"
                   />
                 </div>
 
+                {/* Controle de Lote */}
                 <div>
                   <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wider mb-1">
-                    Situação do Produto
+                    Controle de Lote e Validade
                   </label>
                   <select
-                    value={formAtivo}
-                    onChange={(e) => setFormAtivo(Number(e.target.value))}
+                    value={formControlaValidade}
+                    onChange={(e) => setFormControlaValidade(Number(e.target.value))}
                     disabled={formMode === 'view'}
                     className="w-full px-3 py-2 bg-[#f1f3f5] border border-slate-300 rounded text-xs text-slate-800 focus:bg-white focus:border-teal-500 shadow-inner cursor-pointer"
                   >
-                    <option value={1}>Ativo no Catálogo</option>
-                    <option value={0}>Inativo</option>
+                    <option value={1}>SIM — Obrigatório Lote e Validade na Entrada</option>
+                    <option value={0}>NÃO — Item Permanente / Não Perecível</option>
                   </select>
+                </div>
+
+                {/* Observações / Especificação Técnica */}
+                <div className="md:col-span-3">
+                  <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wider mb-1">
+                    Observações / Especificação Adicional
+                  </label>
+                  <textarea
+                    rows={2}
+                    value={formDescricao}
+                    onChange={(e) => setFormDescricao(e.target.value)}
+                    disabled={formMode === 'view'}
+                    className="w-full px-3 py-2 bg-[#f1f3f5] border border-slate-300 rounded text-xs text-slate-800 focus:bg-white focus:border-teal-500 shadow-inner"
+                    placeholder="Observações complementares, marcas preferenciais, registro ANVISA..."
+                  />
                 </div>
               </div>
             )}
 
-            {/* ABA 2: CONTROLE DE ESTOQUE */}
+            {/* ABA 2: CONTROLE DE ESTOQUE & CAPACIDADES */}
             {activeFormTab === 'controle_estoque' && (
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                 <div>
@@ -637,7 +774,7 @@ export const ProdutosView: React.FC<ProdutosViewProps> = ({
                     className="w-full px-3 py-2 bg-[#f1f3f5] border border-slate-300 rounded text-xs text-slate-800 font-mono focus:bg-white focus:border-teal-500 shadow-inner"
                     required
                   />
-                  <p className="text-[10px] text-slate-500 mt-1">Dispara alerta no painel se o saldo for menor ou igual.</p>
+                  <p className="text-[10px] text-slate-500 mt-1">Dispara alerta gerencial de reposição quando o saldo for menor ou igual.</p>
                 </div>
 
                 <div>
@@ -656,23 +793,24 @@ export const ProdutosView: React.FC<ProdutosViewProps> = ({
 
                 <div>
                   <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wider mb-1">
-                    Valor Unitário Médio (R$)
+                    Custo Unitário Oficial (R$)
                   </label>
                   <input
                     type="number"
-                    step="0.01"
+                    step="0.0001"
                     min="0"
-                    value={formValorUnitario}
-                    onChange={(e) => setFormValorUnitario(Number(e.target.value))}
+                    value={formCustoUnitario}
+                    onChange={(e) => setFormCustoUnitario(Number(e.target.value))}
                     disabled={formMode === 'view'}
-                    className="w-full px-3 py-2 bg-[#f1f3f5] border border-slate-300 rounded text-xs text-slate-800 font-mono focus:bg-white focus:border-teal-500 shadow-inner"
+                    className="w-full px-3 py-2 bg-[#f1f3f5] border border-slate-300 rounded text-xs text-slate-800 font-mono font-bold focus:bg-white focus:border-teal-500 shadow-inner"
                   />
+                  <p className="text-[10px] text-slate-500 mt-1">Valor de referência para precificação e Curva ABC.</p>
                 </div>
 
                 <div className="p-4 bg-teal-50/70 border border-teal-200 rounded-lg md:col-span-3 flex items-center justify-between">
                   <div>
                     <span className="text-[11px] font-bold text-teal-900 uppercase tracking-wider">Saldo Físico Atual no Almoxarifado</span>
-                    <p className="text-xs text-teal-700">Calculado rigorosamente por entradas fiscais e saídas/baixas atendidas.</p>
+                    <p className="text-xs text-teal-700">Calculado rigorosamente por entradas fiscais, inventários e saídas/baixas atendidas.</p>
                   </div>
                   <div className="text-2xl font-black text-teal-900 font-mono">
                     {formQuantidadeAtual} {formUnidadeMedida}
@@ -681,7 +819,7 @@ export const ProdutosView: React.FC<ProdutosViewProps> = ({
               </div>
             )}
 
-            {/* ABA 3: LOTES EM ESTOQUE & CONTROLE DE VALIDADE (90 / 60 / 30 DIAS E BLOQUEIO) */}
+            {/* ABA 3: LOTES EM ESTOQUE & CONTROLE DE VALIDADE */}
             {activeFormTab === 'lotes_validade' && (
               <div className="space-y-3">
                 <div className="border border-slate-200 rounded-lg overflow-hidden">
@@ -708,32 +846,31 @@ export const ProdutosView: React.FC<ProdutosViewProps> = ({
                               <td className="py-2 px-3 text-center">
                                 {st === 'vencido' ? (
                                   <span className="px-2 py-0.5 rounded bg-red-900 text-white font-bold text-[10px] uppercase">
-                                    BLOQUEADO • VENCIDO ({Math.abs(lt.dias_para_vencer || 0)}d)
+                                    VENCIDO (BLOQUEADO)
                                   </span>
                                 ) : st === 'critico_30d' ? (
-                                  <span className="px-2 py-0.5 rounded bg-rose-100 text-rose-800 border border-rose-300 font-bold text-[10px] uppercase">
-                                    CRÍTICO ≤ 30d ({lt.dias_para_vencer}d)
+                                  <span className="px-2 py-0.5 rounded bg-rose-600 text-white font-bold text-[10px] uppercase">
+                                    CRÍTICO (≤30 DIAS)
                                   </span>
                                 ) : st === 'alerta_60d' ? (
-                                  <span className="px-2 py-0.5 rounded bg-orange-100 text-orange-800 border border-orange-300 font-bold text-[10px] uppercase">
-                                    ALERTA ≤ 60d ({lt.dias_para_vencer}d)
+                                  <span className="px-2 py-0.5 rounded bg-amber-500 text-white font-bold text-[10px] uppercase">
+                                    ALERTA (≤60 DIAS)
                                   </span>
                                 ) : st === 'atencao_90d' ? (
-                                  <span className="px-2 py-0.5 rounded bg-amber-100 text-amber-800 border border-amber-300 font-bold text-[10px] uppercase">
-                                    ATENÇÃO ≤ 90d ({lt.dias_para_vencer}d)
+                                  <span className="px-2 py-0.5 rounded bg-yellow-400 text-slate-900 font-bold text-[10px] uppercase">
+                                    ATENÇÃO (≤90 DIAS)
                                   </span>
                                 ) : (
-                                  <span className="px-2 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-200 font-bold text-[10px] uppercase">
-                                    REGULAR {lt.dias_para_vencer != null ? `(${lt.dias_para_vencer}d)` : ''}
+                                  <span className="px-2 py-0.5 rounded bg-emerald-100 text-emerald-800 font-semibold text-[10px] uppercase">
+                                    REGULAR (&gt;90 DIAS)
                                   </span>
                                 )}
                               </td>
                               <td className="py-2 px-3 text-slate-600">
-                                {lt.fornecedor_nome || 'Estoque Inicial'}
-                                {lt.marca ? ` • Marca: ${lt.marca}` : ''}
+                                {lt.fornecedor_nome || lt.marca || 'Padrão Almoxarifado'}
                               </td>
                               <td className="py-2 px-3 text-right font-mono font-bold text-slate-800">
-                                {lt.quantidade_atual} {formUnidadeMedida}
+                                {lt.quantidade_atual} {editingProdutoObj?.unidade_medida || 'UN'}
                               </td>
                             </tr>
                           );
@@ -741,7 +878,7 @@ export const ProdutosView: React.FC<ProdutosViewProps> = ({
                       ) : (
                         <tr>
                           <td colSpan={5} className="py-6 text-center text-slate-400">
-                            Nenhum lote ativo registrado para este item. Os lotes são gerados nas Entradas por Nota Fiscal ou Entradas Diversas.
+                            Nenhum lote com saldo registrado para este produto. Os lotes são criados na confirmação da Nota Fiscal de Entrada ou Ajuste de Inventário.
                           </td>
                         </tr>
                       )}
@@ -751,20 +888,16 @@ export const ProdutosView: React.FC<ProdutosViewProps> = ({
               </div>
             )}
 
-            {/* ABA 3: FORNECEDORES & MARCAS EQUIVALENTES (MESMO CÓDIGO NO ESTOQUE) */}
+            {/* ABA 4: FORNECEDORES & MARCAS */}
             {activeFormTab === 'fornecedores_marcas' && (
-              <div className="space-y-3">
-                {formMode === 'create' ? (
-                  <div className="p-4 bg-slate-50 border border-slate-200 rounded-lg text-xs text-slate-600">
-                    Salve o cadastro inicial deste produto primeiro para habilitar o vínculo direto de fornecedores e marcas,
-                    ou vincule automaticamente no momento da <strong>Entrada de Estoque por Nota Fiscal</strong>.
-                  </div>
-                ) : (
+              <div className="space-y-4">
+                {formMode !== 'create' && (
                   <>
-                    {formMode === 'edit' && canEdit && (
-                      <div className="p-4 bg-slate-50 border border-slate-200 rounded-lg space-y-3">
-                        <div className="text-xs font-bold text-slate-700 uppercase tracking-wide">
-                          Vincular Fornecedor / Marca Homologada ao Código {formCodigo}
+                    {canEdit && formMode === 'edit' && (
+                      <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg space-y-3">
+                        <div className="text-xs font-bold text-slate-700 flex items-center gap-1.5">
+                          <Truck className="w-4 h-4 text-teal-700" />
+                          <span>Vincular Novo Fornecedor / Marca ao Código</span>
                         </div>
                         <div className="grid grid-cols-1 md:grid-cols-12 gap-3 items-end">
                           <div className="md:col-span-4">
@@ -776,26 +909,24 @@ export const ProdutosView: React.FC<ProdutosViewProps> = ({
                               onChange={(e) => setVincFornecedorId(Number(e.target.value))}
                               className="w-full px-3 py-2 bg-white border border-slate-300 rounded text-xs text-slate-800 focus:border-teal-500 cursor-pointer"
                             >
-                              <option value={0}>Selecione o fornecedor...</option>
-                              {fornecedores
-                                .filter((f) => f.ativo === 1)
-                                .map((f) => (
-                                  <option key={f.id} value={f.id}>
-                                    {f.codigo} - {f.nome_fantasia || f.razao_social}
-                                  </option>
-                                ))}
+                              <option value={0}>Selecione o Fornecedor...</option>
+                              {fornecedores.map((f) => (
+                                <option key={f.id} value={f.id}>
+                                  {f.codigo} — {f.nome_fantasia || f.razao_social}
+                                </option>
+                              ))}
                             </select>
                           </div>
 
                           <div className="md:col-span-3">
                             <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">
-                              Marca Comercial
+                              Marca / Fabricante
                             </label>
                             <input
                               type="text"
                               value={vincMarca}
                               onChange={(e) => setVincMarca(e.target.value)}
-                              placeholder="ex: BD / Descarpack"
+                              placeholder="ex: BD, Descarpack, Chamex..."
                               className="w-full px-3 py-2 bg-white border border-slate-300 rounded text-xs text-slate-800 focus:border-teal-500"
                             />
                           </div>
@@ -883,18 +1014,18 @@ export const ProdutosView: React.FC<ProdutosViewProps> = ({
               </div>
             )}
 
-            {/* ABA 4: HISTÓRICO */}
+            {/* ABA 5: HISTÓRICO */}
             {activeFormTab === 'historico' && (
               <div className="p-4 bg-slate-50 rounded border border-slate-200 space-y-2 max-w-xl">
                 <div className="text-xs font-bold text-slate-700">Rastreabilidade no Livro Razão</div>
                 <p className="text-xs text-slate-600 leading-relaxed">
                   Para auditar todas as entradas por nota fiscal, saídas dispensadas para Centros de Custo e eventuais estornos
-                  deste produto, utilize o módulo <strong>&ldquo;Livro Razão / Movimentações&rdquo;</strong> ou emita o relatório de posição física.
+                  deste produto, utilize o módulo <strong>&ldquo;Livro Razão / Movimentações&rdquo;</strong> ou o módulo de <strong>&ldquo;Inventário do Estoque&rdquo;</strong>.
                 </p>
               </div>
             )}
 
-            {/* Rodapé: SALVAR e VOLTAR */}
+            {/* Rodapé do Formulário: SALVAR e VOLTAR */}
             <div className="pt-4 border-t border-slate-200 flex items-center justify-between gap-3">
               <div>
                 {formMode === 'edit' && canEdit && editingId && (
@@ -939,9 +1070,10 @@ export const ProdutosView: React.FC<ProdutosViewProps> = ({
         </div>
       )}
 
-      {/* Linha de Filtros */}
+      {/* Linha de Filtros (Conforme Item 3 da Especificação) */}
       <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm space-y-4">
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-5 gap-3">
+          {/* 1. Código */}
           <div>
             <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1">
               Código
@@ -950,51 +1082,73 @@ export const ProdutosView: React.FC<ProdutosViewProps> = ({
               type="text"
               value={filtroCodigo}
               onChange={(e) => { setFiltroCodigo(e.target.value); setCurrentPage(1); }}
-              placeholder="ex: MAT-001"
-              className="w-full px-3 py-2 bg-[#f1f3f5] border border-slate-300 rounded text-xs text-slate-800 focus:bg-white focus:border-teal-500 shadow-inner"
+              placeholder="ex: 4149881 ou 414..."
+              className="w-full px-3 py-2 bg-[#f1f3f5] border border-slate-300 rounded text-xs text-slate-800 font-mono focus:bg-white focus:border-teal-500 shadow-inner"
             />
           </div>
 
+          {/* 2. Descrição */}
           <div>
             <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1">
-              Descrição / Nome
+              Descrição / Termo
             </label>
             <input
               type="text"
               value={filtroNome}
               onChange={(e) => { setFiltroNome(e.target.value); setCurrentPage(1); }}
-              placeholder="Pesquisar por material..."
+              placeholder="Pesquisar por descrição..."
               className="w-full px-3 py-2 bg-[#f1f3f5] border border-slate-300 rounded text-xs text-slate-800 focus:bg-white focus:border-teal-500 shadow-inner"
             />
           </div>
 
+          {/* 3. Grupo de Produto (15 Grupos Oficiais + TODOS) */}
           <div>
             <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1">
-              Tipo de Item
+              Grupo de Produto
+            </label>
+            <select
+              value={filtroGrupoId}
+              onChange={(e) => { setFiltroGrupoId(e.target.value); setCurrentPage(1); }}
+              className="w-full px-3 py-2 bg-[#f1f3f5] border border-slate-300 rounded text-xs text-slate-800 focus:bg-white focus:border-teal-500 shadow-inner cursor-pointer"
+            >
+              <option value="todos">TODOS OS GRUPOS</option>
+              {grupos.map((g) => (
+                <option key={g.id} value={g.id}>
+                  {g.nome}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* 4. Tipo (TODOS / Consumível / Não Consumível) */}
+          <div>
+            <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1">
+              Tipo
             </label>
             <select
               value={filtroTipo}
               onChange={(e) => { setFiltroTipo(e.target.value as any); setCurrentPage(1); }}
               className="w-full px-3 py-2 bg-[#f1f3f5] border border-slate-300 rounded text-xs text-slate-800 focus:bg-white focus:border-teal-500 shadow-inner cursor-pointer"
             >
-              <option value="todos">TODOS OS TIPOS</option>
-              <option value="consumivel">Consumível (Insumos / Fármacos)</option>
-              <option value="nao_consumivel">Não Consumível (Equipamentos)</option>
+              <option value="todos">TODOS</option>
+              <option value="consumivel">Consumível</option>
+              <option value="nao_consumivel">Não Consumível</option>
             </select>
           </div>
 
+          {/* 5. Ativo (TODOS / SIM / NÃO) */}
           <div>
             <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1">
-              Status Estoque
+              Ativo
             </label>
             <select
-              value={filtroStatusEstoque}
-              onChange={(e) => { setFiltroStatusEstoque(e.target.value as any); setCurrentPage(1); }}
+              value={filtroAtivo}
+              onChange={(e) => { setFiltroAtivo(e.target.value as any); setCurrentPage(1); }}
               className="w-full px-3 py-2 bg-[#f1f3f5] border border-slate-300 rounded text-xs text-slate-800 focus:bg-white focus:border-teal-500 shadow-inner cursor-pointer"
             >
               <option value="todos">TODOS</option>
-              <option value="critico">CRÍTICO (Abaixo ou igual ao Mínimo)</option>
-              <option value="normal">NORMAL (Saldo Adequado)</option>
+              <option value="1">SIM (Ativo)</option>
+              <option value="0">NÃO (Inativo)</option>
             </select>
           </div>
         </div>
@@ -1023,133 +1177,120 @@ export const ProdutosView: React.FC<ProdutosViewProps> = ({
         </div>
       </div>
 
-      {/* Grid de Resultados Zebrada */}
+      {/* Grid de Resultados Conforme Especificação:
+          Código | Descrição do Produto | Grupo | UND | Custo (R$) | Saldo Atual | Tipo | Ativo | Ações */}
       <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-left text-xs">
             <thead className="bg-slate-100 text-slate-700 font-bold uppercase tracking-wider border-b border-slate-200">
               <tr>
                 <th className="py-2.5 px-3">Código</th>
-                <th className="py-2.5 px-3">Descrição / Material</th>
-                <th className="py-2.5 px-3 text-center">UN</th>
+                <th className="py-2.5 px-3">Descrição do Produto</th>
+                <th className="py-2.5 px-3">Grupo</th>
+                <th className="py-2.5 px-3 text-center">UND</th>
+                <th className="py-2.5 px-3 text-right">Custo (R$)</th>
+                <th className="py-2.5 px-3 text-right">Saldo Atual</th>
                 <th className="py-2.5 px-3 text-center">Tipo</th>
-                <th className="py-2.5 px-3 text-right">Qtd Atual</th>
-                <th className="py-2.5 px-3 text-right">Mínimo</th>
-                <th className="py-2.5 px-3 text-right">Máximo</th>
-                <th className="py-2.5 px-3 text-center">Status</th>
+                <th className="py-2.5 px-3 text-center">Ativo</th>
                 <th className="py-2.5 px-3 text-right">Ações</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-200">
               {paginatedProdutos.length > 0 ? (
                 paginatedProdutos.map((p) => {
-                  const isCritico = p.quantidade_atual <= p.estoque_minimo;
+                  const custo = Number(p.custo_unitario ?? p.valor_unitario ?? 0);
                   return (
                     <tr key={p.id} className="odd:bg-white even:bg-slate-50/70 hover:bg-teal-50/40 transition-colors">
-                      <td className="py-2 px-3 font-mono font-semibold text-slate-700">{p.codigo}</td>
-                      <td className="py-2 px-3 font-medium text-slate-800">
-                        <div>{p.nome}</div>
-                        {p.fornecedores_vinculados && p.fornecedores_vinculados.length > 0 && (
-                          <div className="flex flex-wrap items-center gap-1 mt-0.5">
-                            <span className="text-[10px] font-semibold text-teal-800 bg-teal-50 border border-teal-200 px-1.5 py-0.2 rounded">
-                              {p.fornecedores_vinculados.length} forn./marca(s) neste código
-                            </span>
-                            {p.fornecedores_vinculados.slice(0, 2).map((vf) => (
-                              <span
-                                key={vf.id}
-                                className="text-[10px] text-slate-500 bg-slate-100 px-1.5 py-0.2 rounded"
-                                title={`Fornecedor: ${vf.fornecedor_razao_social} | Marca: ${vf.marca || 'Padrão'} | Nomenclatura NF: ${vf.nomenclatura_fornecedor || p.nome}`}
-                              >
-                                {vf.fornecedor_nome_fantasia || vf.fornecedor_razao_social}
-                                {vf.marca ? ` (${vf.marca})` : ''}
-                              </span>
-                            ))}
-                          </div>
-                        )}
-                        {p.lotes && p.lotes.length > 0 && (
-                          <div className="flex flex-wrap items-center gap-1 mt-1">
-                            {p.lotes.some((l) => l.status_validade === 'vencido') && (
-                              <span className="text-[9px] font-bold uppercase bg-red-900 text-white px-1.5 py-0.5 rounded">
-                                Lote Vencido (Bloqueado)
-                              </span>
-                            )}
-                            {p.lotes.some((l) => l.status_validade === 'critico_30d') && (
-                              <span className="text-[9px] font-bold uppercase bg-rose-100 text-rose-800 border border-rose-300 px-1.5 py-0.5 rounded">
-                                Vence ≤ 30 dias (Crítico)
-                              </span>
-                            )}
-                            {p.lotes.some((l) => l.status_validade === 'alerta_60d') && (
-                              <span className="text-[9px] font-bold uppercase bg-orange-100 text-orange-800 border border-orange-300 px-1.5 py-0.5 rounded">
-                                Vence ≤ 60 dias (Alerta)
-                              </span>
-                            )}
-                            {p.lotes.some((l) => l.status_validade === 'atencao_90d') && (
-                              <span className="text-[9px] font-bold uppercase bg-amber-100 text-amber-800 border border-amber-300 px-1.5 py-0.5 rounded">
-                                Vence ≤ 90 dias (Atenção)
-                              </span>
-                            )}
-                          </div>
+                      {/* Código */}
+                      <td className="py-2 px-3 font-mono font-bold text-slate-800">{p.codigo}</td>
+
+                      {/* Descrição do Produto */}
+                      <td className="py-2 px-3 font-medium text-slate-800 max-w-md">
+                        <div className="truncate font-semibold uppercase">{p.nome}</div>
+                        {p.descricao && (
+                          <div className="text-[10px] text-slate-500 truncate">{p.descricao}</div>
                         )}
                       </td>
-                      <td className="py-2 px-3 text-center font-bold text-slate-600">{p.unidade_medida}</td>
-                      <td className="py-2 px-3 text-center">
-                        <span
-                          className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider ${
-                            p.tipo === 'consumivel'
-                              ? 'bg-blue-50 text-blue-700 border border-blue-200'
-                              : 'bg-purple-50 text-purple-700 border border-purple-200'
-                          }`}
-                        >
-                          {p.tipo === 'consumivel' ? 'Consumível' : 'Equipamento'}
+
+                      {/* Grupo */}
+                      <td className="py-2 px-3 text-slate-600 whitespace-nowrap">
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-slate-100 text-slate-700 font-medium text-[10px]">
+                          <Layers className="w-3 h-3 text-slate-400" />
+                          <span>{p.grupo_nome || 'ALMOXARIFADO CENTRAL'}</span>
                         </span>
                       </td>
-                      <td className="py-2 px-3 text-right font-mono font-bold text-slate-800">
-                        {p.quantidade_atual}
+
+                      {/* UND */}
+                      <td className="py-2 px-3 text-center font-mono font-semibold text-slate-700">{p.unidade_medida}</td>
+
+                      {/* Custo (R$) */}
+                      <td className="py-2 px-3 text-right font-mono text-slate-700">
+                        {custo > 0 ? `R$ ${custo.toFixed(2)}` : 'R$ 0,00'}
                       </td>
-                      <td className="py-2 px-3 text-right font-mono text-slate-500">{p.estoque_minimo}</td>
-                      <td className="py-2 px-3 text-right font-mono text-slate-500">{p.estoque_maximo}</td>
+
+                      {/* Saldo Atual */}
+                      <td className="py-2 px-3 text-right font-mono font-bold text-slate-800">
+                        <span className={p.quantidade_atual <= p.estoque_minimo ? 'text-rose-600 font-black' : 'text-slate-800'}>
+                          {p.quantidade_atual}
+                        </span>
+                      </td>
+
+                      {/* Tipo */}
                       <td className="py-2 px-3 text-center">
-                        {isCritico ? (
-                          <span className="inline-flex items-center gap-1 text-rose-700 font-bold bg-rose-50 px-2 py-0.5 rounded text-[10px] border border-rose-200 animate-pulse">
-                            <AlertTriangle className="w-3 h-3 text-rose-600" />
-                            <span>CRÍTICO</span>
+                        {p.tipo === 'consumivel' ? (
+                          <span className="px-2 py-0.5 rounded bg-teal-100 text-teal-800 font-medium text-[10px]">
+                            Consumível
                           </span>
                         ) : (
-                          <span className="inline-flex items-center gap-1 text-emerald-700 font-bold bg-emerald-50 px-2 py-0.5 rounded text-[10px] border border-emerald-200">
-                            <CheckCircle2 className="w-3 h-3" />
-                            <span>NORMAL</span>
+                          <span className="px-2 py-0.5 rounded bg-amber-100 text-amber-800 font-medium text-[10px]">
+                            Não Consumível
                           </span>
                         )}
                       </td>
-                      <td className="py-2 px-3 text-right">
+
+                      {/* Ativo */}
+                      <td className="py-2 px-3 text-center">
+                        {p.ativo === 1 ? (
+                          <span className="px-2 py-0.5 rounded bg-emerald-100 text-emerald-800 font-bold text-[10px]">
+                            SIM
+                          </span>
+                        ) : (
+                          <span className="px-2 py-0.5 rounded bg-rose-100 text-rose-800 font-bold text-[10px]">
+                            NÃO
+                          </span>
+                        )}
+                      </td>
+
+                      {/* Ações */}
+                      <td className="py-2 px-3 text-right whitespace-nowrap">
                         <div className="flex items-center justify-end gap-1">
                           <button
                             type="button"
                             onClick={() => handleVisualizar(p)}
-                            className="p-1.5 rounded hover:bg-slate-200 text-slate-500 hover:text-slate-800 transition-colors"
-                            title="Visualizar"
+                            className="p-1 text-slate-500 hover:text-teal-700 hover:bg-teal-50 rounded transition-all cursor-pointer"
+                            title="Visualizar Detalhes"
                           >
                             <Eye className="w-4 h-4" />
                           </button>
                           {canEdit && (
-                            <>
-                              <button
-                                type="button"
-                                onClick={() => handleEditar(p)}
-                                className="p-1.5 rounded hover:bg-teal-100 text-teal-700 transition-colors cursor-pointer"
-                                title="Editar produto"
-                              >
-                                <Edit2 className="w-4 h-4" />
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => setDeletingProduto(p)}
-                                className="p-1.5 rounded hover:bg-rose-100 text-rose-600 transition-colors cursor-pointer"
-                                title="Excluir produto"
-                              >
-                                <Trash2 className="w-4 h-4" />
-                              </button>
-                            </>
+                            <button
+                              type="button"
+                              onClick={() => handleEditar(p)}
+                              className="p-1 text-teal-600 hover:text-teal-800 hover:bg-teal-50 rounded transition-all cursor-pointer"
+                              title="Editar Produto"
+                            >
+                              <Edit2 className="w-4 h-4" />
+                            </button>
+                          )}
+                          {canEdit && (
+                            <button
+                              type="button"
+                              onClick={() => setDeletingProduto(p)}
+                              className="p-1 text-rose-500 hover:text-rose-700 hover:bg-rose-50 rounded transition-all cursor-pointer"
+                              title="Excluir Produto"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
                           )}
                         </div>
                       </td>
@@ -1158,8 +1299,8 @@ export const ProdutosView: React.FC<ProdutosViewProps> = ({
                 })
               ) : (
                 <tr>
-                  <td colSpan={9} className="py-8 text-center text-slate-500">
-                    Nenhum produto localizado para os filtros informados.
+                  <td colSpan={9} className="py-8 text-center text-slate-400">
+                    Nenhum produto localizado com os filtros selecionados.
                   </td>
                 </tr>
               )}
@@ -1167,10 +1308,10 @@ export const ProdutosView: React.FC<ProdutosViewProps> = ({
           </table>
         </div>
 
-        {/* Rodapé da Consulta */}
-        <div className="px-4 py-3 bg-slate-50 border-t border-slate-200 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-slate-600">
-          <div>
-            <strong>{filteredProdutos.length}</strong> registro(s) encontrado(s)
+        {/* Rodapé da Tabela com Paginação */}
+        <div className="bg-slate-50 px-4 py-3 border-t border-slate-200 flex flex-wrap items-center justify-between gap-3 text-xs">
+          <div className="text-slate-600">
+            Mostrando <strong>{paginatedProdutos.length}</strong> de <strong>{filteredProdutos.length}</strong> produto(s) encontrado(s)
           </div>
 
           <div className="flex items-center gap-1">
@@ -1223,6 +1364,11 @@ export const ProdutosView: React.FC<ProdutosViewProps> = ({
         onConfirm={handleConfirmDelete}
         onClose={() => setDeletingProduto(null)}
       />
+
+      {/* Rodapé Institucional Obrigatório */}
+      <footer className="text-center py-4 text-xs text-slate-500 font-medium">
+        Sistema produzido para ser gratuito. Criado por Bruno Rocha.
+      </footer>
     </div>
   );
 };

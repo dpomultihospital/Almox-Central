@@ -16,7 +16,8 @@ import {
   ArrowRight,
   HardDriveDownload,
   Truck,
-  ArrowLeftRight
+  ArrowLeftRight,
+  Boxes
 } from 'lucide-react';
 import type { Usuario, EmpresaUnidade, Produto, Requisicao } from '../types/index.ts';
 import { NotificationsDropdown } from './NotificationsDropdown.tsx';
@@ -81,6 +82,15 @@ export const ModuleGridView: React.FC<ModuleGridViewProps> = ({
       descricao: 'Saídas por vencimento/descarte, avaria, perda, doação e livro-caixa',
       icon: ArrowLeftRight,
       badge: null,
+      allowedRoles: ['admin', 'almoxarife'],
+    },
+    {
+      id: 'inventarios',
+      label: 'Inventário do Estoque',
+      descricao: 'Recontagem física, auditoria e ajuste de saldo por centro de custo e lote',
+      icon: Boxes,
+      badge: 'Contagem',
+      badgeColor: 'bg-emerald-600 text-white',
       allowedRoles: ['admin', 'almoxarife'],
     },
     {

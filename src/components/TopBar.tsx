@@ -22,7 +22,8 @@ import {
   CornerDownLeft,
   X,
   PanelLeft,
-  PanelLeftClose
+  PanelLeftClose,
+  Boxes
 } from 'lucide-react';
 import type { Usuario, EmpresaUnidade, Produto, Requisicao } from '../types/index.ts';
 import { NotificationsDropdown } from './NotificationsDropdown.tsx';
@@ -117,6 +118,7 @@ export const TopBar: React.FC<TopBarProps> = ({
       case 'produtos': return 'Produtos e Catálogo';
       case 'entradas': return 'Entrada de Nota Fiscal';
       case 'movimentacoes': return 'Movimentações Diversas';
+      case 'inventarios': return 'Inventário do Estoque';
       case 'emprestimos': return 'Empréstimos Institucionais';
       case 'requisicoes': return 'Requisições de Insumos';
       case 'aprovacao-requisicoes': return 'Aprovação de Requisições';
@@ -234,6 +236,18 @@ export const TopBar: React.FC<TopBarProps> = ({
       icon: ArrowLeftRight,
       action: () => {
         onSelectTab?.('movimentacoes');
+        setIsCommandOpen(false);
+      },
+      allowed: isAlmoxarifeOrAdmin,
+    },
+    {
+      id: 'nav-inventarios',
+      group: 'Navegação',
+      label: 'Inventário do Estoque (Recontagem)',
+      hint: 'Auditoria e ajuste físico de saldo',
+      icon: Boxes,
+      action: () => {
+        onSelectTab?.('inventarios');
         setIsCommandOpen(false);
       },
       allowed: isAlmoxarifeOrAdmin,

@@ -1,6 +1,35 @@
 export type PerfilUsuario = 'admin' | 'almoxarife' | 'requisitante';
 export type TipoProduto = 'consumivel' | 'nao_consumivel';
-export type UnidadeMedida = 'UN' | 'CX' | 'PCT' | 'L' | 'KG' | 'FR' | 'AMP' | 'ROLO' | 'KIT';
+export type UnidadeMedida = 
+  | 'UN' 
+  | 'UI' 
+  | 'RO' 
+  | 'PC' 
+  | 'BOBINA' 
+  | 'MT' 
+  | 'CA' 
+  | 'RESMA' 
+  | 'GL' 
+  | 'FR' 
+  | 'LT' 
+  | 'PCT' 
+  | 'KIT' 
+  | 'BIS' 
+  | 'CT' 
+  | 'CX' 
+  | 'KG' 
+  | 'L' 
+  | 'AMP' 
+  | 'ROLO' 
+  | string;
+
+export interface GrupoProduto {
+  id: number;
+  codigo?: string | null;
+  nome: string;
+  tipo_padrao: TipoProduto;
+  ativo: number;
+}
 export type StatusRequisicao = 'pendente' | 'aprovada_atendida' | 'rejeitada' | 'cancelada';
 export type PrioridadeRequisicao = 'normal' | 'urgente';
 export type StatusEmprestimo = 'emprestado' | 'devolvido' | 'atrasado';
@@ -131,6 +160,9 @@ export interface Produto {
   codigo: string;
   nome: string;
   descricao?: string | null;
+  grupo_id?: number | null;
+  grupo_codigo?: string | null;
+  grupo_nome?: string | null;
   unidade_medida: UnidadeMedida;
   tipo: TipoProduto;
   controla_validade?: number;
@@ -140,6 +172,7 @@ export interface Produto {
   quantidade_bloqueada_vencida?: number;
   quantidade_disponivel_valida?: number;
   valor_unitario?: number | null;
+  custo_unitario?: number | null;
   localizacao?: string | null;
   ativo: number;
   criado_em: string;
@@ -359,4 +392,45 @@ export interface RelatorioFiltros {
   produto_id?: number;
   status?: string;
   tipo_produto?: string;
+}
+
+export interface ItemInventario {
+  id?: number;
+  inventario_id?: number;
+  produto_id: number;
+  lote_id?: number | null;
+  numero_lote?: string | null;
+  data_validade?: string | null;
+  quantidade_sistema: number;
+  quantidade_fisica: number;
+  diferenca: number;
+  // Campos visuais enriquecidos
+  produto_codigo?: string;
+  produto_nome?: string;
+  unidade_medida?: string;
+  produto_tipo?: string;
+  grupo_id?: number | null;
+  grupo_nome?: string | null;
+}
+
+export interface InventarioEstoque {
+  id: number;
+  codigo: string;
+  data: string;
+  hora: string;
+  empresa_id?: number | null;
+  empresa_codigo?: string;
+  empresa_nome?: string;
+  centro_custo_id: number;
+  centro_custo_codigo?: string;
+  centro_custo_nome?: string;
+  zera_por_lote: number;
+  zera_nao_listados: number;
+  observacao?: string | null;
+  finalizado: number; // 0 = NÃO, 1 = SIM
+  usuario_id: number;
+  usuario_nome?: string;
+  criado_em: string;
+  itens?: ItemInventario[];
+  total_itens?: number;
 }
