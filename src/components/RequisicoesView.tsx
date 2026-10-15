@@ -44,6 +44,7 @@ import {
 } from '../utils/pdfGenerator.ts';
 import { PdfPrintModal } from './PdfPrintModal.tsx';
 import { HelpFloatingModal } from './HelpFloatingModal.tsx';
+import { CentroCustoAlertBanner } from './CentroCustoAlertBanner.tsx';
 import { useToast } from '../context/ToastContext.tsx';
 import { ConfirmDeleteModal } from './ConfirmDeleteModal.tsx';
 
@@ -57,6 +58,7 @@ interface RequisicoesViewProps {
   isCreateModalOpen?: boolean;
   setIsCreateModalOpen?: (open: boolean) => void;
   onVoltar?: () => void;
+  onNavigate?: (tab: string) => void;
 }
 
 export const RequisicoesView: React.FC<RequisicoesViewProps> = ({
@@ -69,6 +71,7 @@ export const RequisicoesView: React.FC<RequisicoesViewProps> = ({
   isCreateModalOpen = false,
   setIsCreateModalOpen,
   onVoltar,
+  onNavigate,
 }) => {
   // Filtros de busca
   const [filtroNumero, setFiltroNumero] = useState('');
@@ -573,6 +576,15 @@ export const RequisicoesView: React.FC<RequisicoesViewProps> = ({
           )}
         </div>
       </div>
+
+      {/* Alerta de Centro de Custo Vazio */}
+      {centrosCusto.length === 0 && (
+        <CentroCustoAlertBanner
+          isAdmin={currentUser?.perfil === 'admin'}
+          onCadastrarCentroCusto={() => onNavigate?.('centros-custo')}
+          mensagemPersonalizada="Cadastre ao menos um Centro de Custo para começar a solicitar requisições de materiais."
+        />
+      )}
 
       {/* =========================================================================
           NOVA REQUISIÇÃO EM ABAS / ETAPAS

@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import {
   PackagePlus,
   Plus,
@@ -20,7 +20,7 @@ import {
   Package,
   Tag
 } from 'lucide-react';
-import type { Produto, Fornecedor, Usuario, Movimentacao, EmpresaUnidade } from '../types/index.ts';
+import type { Produto, Fornecedor, Usuario, Movimentacao, EmpresaUnidade, CentroCusto } from '../types/index.ts';
 import {
   generateComprovanteMovimentacaoPDF,
   generateRelatorioMovimentacoesTelaPDF,
@@ -28,11 +28,13 @@ import {
 } from '../utils/pdfGenerator.ts';
 import { PdfPrintModal } from './PdfPrintModal.tsx';
 import { HelpFloatingModal } from './HelpFloatingModal.tsx';
+import { CentroCustoAlertBanner } from './CentroCustoAlertBanner.tsx';
 import { useToast } from '../context/ToastContext.tsx';
 
 interface EntradasViewProps {
   produtos: Produto[];
   fornecedores?: Fornecedor[];
+  centrosCusto?: CentroCusto[];
   movimentacoes: Movimentacao[];
   currentUser: Usuario | null;
   activeUnidade?: EmpresaUnidade | null;
@@ -46,6 +48,7 @@ interface EntradasViewProps {
 export const EntradasView: React.FC<EntradasViewProps> = ({
   produtos,
   fornecedores = [],
+  centrosCusto = [],
   movimentacoes,
   currentUser,
   activeUnidade,
@@ -66,6 +69,7 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
   // Campos do Formulário
   const [formFornecedorId, setFormFornecedorId] = useState<number>(fornecedores[0]?.id || 0);
   const [formFornecedor, setFormFornecedor] = useState('');
+  const [formCentroCustoId, setFormCentroCustoId] = useState<number>(centrosCusto[0]?.id || 0);
   const [formDocumento, setFormDocumento] = useState(`NF-${Math.floor(10000 + Math.random() * 90000)}`);
   const [buscaCatalogo, setBuscaCatalogo] = useState('');
   const [formProdutoId, setFormProdutoId] = useState<number>(produtos[0]?.id || 0);
@@ -76,6 +80,12 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
   const [formDataValidade, setFormDataValidade] = useState('2027-12-31');
   const [formValorUnitario, setFormValorUnitario] = useState<number>(12.5);
   const [formObservacao, setFormObservacao] = useState('Recebimento de compra regular');
+
+  useEffect(() => {
+    if (!formCentroCustoId && centrosCusto.length > 0) {
+      setFormCentroCustoId(centrosCusto[0].id);
+    }
+  }, [centrosCusto, formCentroCustoId]);
 
   // Paginação
   const [currentPage, setCurrentPage] = useState(1);
@@ -148,6 +158,7 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
     const defaultProdId = produtos[0]?.id || 0;
     setFormFornecedorId(defaultFornId);
     setFormFornecedor('');
+    setFormCentroCustoId(centrosCusto[0]?.id || 0);
     setFormDocumento(`NF-${Math.floor(10000 + Math.random() * 90000)}`);
     setFormProdutoId(defaultProdId);
     setFormMarca('');
@@ -206,6 +217,7 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
           documento_referencia: formDocumento.trim().toUpperCase(),
           fornecedor_id: formFornecedorId || null,
           fornecedor: fornObj ? fornObj.razao_social : formFornecedor ? formFornecedor.trim() : null,
+          centro_custo_id: formCentroCustoId || null,
           marca: formMarca ? formMarca.trim() : null,
           nomenclatura_fornecedor: formNomenclaturaFornecedor ? formNomenclaturaFornecedor.trim() : null,
           numero_lote: formNumeroLote ? formNumeroLote.trim() : null,
@@ -290,6 +302,15 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
           )}
         </div>
       </div>
+
+      {/* Alerta de Centro de Custo Vazio */}
+      {centrosCusto.length === 0 && (
+        <CentroCustoAlertBanner
+          isAdmin={currentUser?.perfil === 'admin'}
+          onCadastrarCentroCusto={() => onNavigate?.('centros-custo')}
+          mensagemPersonalizada="Cadastre ao menos um Centro de Custo para começar a receber notas e estocar materiais."
+        />
+      )}
 
       {/* Formulário em Abas */}
       {isFormOpen && (
@@ -413,6 +434,55 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
                       <p className="text-[10px] text-amber-700 font-medium">
                         Dica: Cadastre seus fornecedores no módulo &ldquo;1. Cadastro de Fornecedor&rdquo; para selecioná-los na lista homologada.
                       </p>
+                    </div>
+                  )}
+                </div>
+
+                {/* Seletor de Centro de Custo com atalho para admin */}
+                <div className="md:col-span-2">
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wider">
+                      Centro de Custo (Local do Estoque)
+                    </label>
+                    {currentUser?.perfil === 'admin' && onNavigate && (
+                      <button
+                        type="button"
+                        onClick={() => onNavigate('centros-custo')}
+                        className="text-[10px] font-bold text-teal-700 hover:underline flex items-center gap-0.5 cursor-pointer"
+                      >
+                        <Plus className="w-3 h-3" />
+                        <span>Cadastrar novo centro de custo</span>
+                      </button>
+                    )}
+                  </div>
+                  {centrosCusto.length > 0 ? (
+                    <select
+                      value={formCentroCustoId}
+                      onChange={(e) => setFormCentroCustoId(Number(e.target.value))}
+                      className="w-full px-3 py-2 bg-[#f1f3f5] border border-slate-300 rounded text-xs text-slate-800 focus:bg-white focus:border-teal-500 shadow-inner cursor-pointer"
+                    >
+                      <option value={0}>Almoxarifado Central (Padrão)</option>
+                      {centrosCusto.filter((c) => c.ativo !== 0).map((cc) => (
+                        <option key={cc.id} value={cc.id}>
+                          {cc.codigo} - {cc.nome} {cc.departamento ? `(${cc.departamento})` : ''}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-900 flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <Building2 className="w-4 h-4 text-amber-700 shrink-0" />
+                        <span>Nenhum Centro de Custo cadastrado.</span>
+                      </div>
+                      {currentUser?.perfil === 'admin' && onNavigate && (
+                        <button
+                          type="button"
+                          onClick={() => onNavigate('centros-custo')}
+                          className="font-bold underline text-amber-900 hover:text-amber-950 cursor-pointer text-xs"
+                        >
+                          Cadastre ao menos um Centro de Custo para começar
+                        </button>
+                      )}
                     </div>
                   )}
                 </div>

@@ -37,6 +37,7 @@ import type {
   GrupoProduto
 } from '../types/index.ts';
 import { useToast } from '../context/ToastContext.tsx';
+import { CentroCustoAlertBanner } from './CentroCustoAlertBanner.tsx';
 
 interface InventarioViewProps {
   currentUser: Usuario;
@@ -45,6 +46,7 @@ interface InventarioViewProps {
   produtos: Produto[];
   onRefresh?: () => void;
   onVoltar?: () => void;
+  onNavigate?: (tab: string) => void;
 }
 
 export const InventarioView: React.FC<InventarioViewProps> = ({
@@ -54,6 +56,7 @@ export const InventarioView: React.FC<InventarioViewProps> = ({
   produtos,
   onRefresh,
   onVoltar,
+  onNavigate,
 }) => {
   const { toast } = useToast();
 
@@ -500,6 +503,15 @@ export const InventarioView: React.FC<InventarioViewProps> = ({
           )}
         </div>
 
+        {/* Alerta de Centro de Custo Vazio */}
+        {centrosCusto.length === 0 && (
+          <CentroCustoAlertBanner
+            isAdmin={currentUser?.perfil === 'admin'}
+            onCadastrarCentroCusto={() => onNavigate?.('centros-custo')}
+            mensagemPersonalizada="Cadastre ao menos um Centro de Custo para começar a auditar inventários de estoque."
+          />
+        )}
+
         {/* Card de Filtros da Consulta */}
         <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm space-y-4">
           <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-5 gap-3">
@@ -791,11 +803,6 @@ export const InventarioView: React.FC<InventarioViewProps> = ({
             </div>
           </div>
         </div>
-
-        {/* Rodapé Institucional Exigido */}
-        <footer className="text-center py-4 text-xs text-slate-500 font-medium">
-          Sistema produzido para ser gratuito. Criado por Bruno Rocha.
-        </footer>
       </div>
     );
   }
@@ -1517,11 +1524,6 @@ export const InventarioView: React.FC<InventarioViewProps> = ({
           </div>
         </div>
       )}
-
-      {/* Rodapé Institucional Exigido */}
-      <footer className="text-center py-4 text-xs text-slate-500 font-medium">
-        Sistema produzido para ser gratuito. Criado por Bruno Rocha.
-      </footer>
     </div>
   );
 };

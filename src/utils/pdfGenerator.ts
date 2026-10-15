@@ -183,8 +183,8 @@ function drawInstitutionalFooters(doc: jsPDF, codigoAutenticacao?: string) {
     doc.setFontSize(7);
     doc.setTextColor(100, 116, 139);
     const leftFooter = codigoAutenticacao
-      ? `AlmoxControl Salutem • Autenticação: ${codigoAutenticacao} • Desenvolvido por Bruno Rocha`
-      : 'AlmoxControl Salutem • Controle de Almoxarifado & Rastreabilidade Hospitalar • Desenvolvido por Bruno Rocha';
+      ? `AlmoxControl Salutem • Autenticação: ${codigoAutenticacao} • Desenvolvido por Bruno Rocha - DPO`
+      : 'AlmoxControl Salutem • Controle de Almoxarifado & Rastreabilidade Hospitalar • Desenvolvido por Bruno Rocha - DPO';
     doc.text(leftFooter, 12, pageHeight - 7.5);
     doc.text(`Página ${i} de ${totalPages}`, pageWidth - 12, pageHeight - 7.5, {
       align: 'right',

@@ -1364,11 +1364,6 @@ export const ProdutosView: React.FC<ProdutosViewProps> = ({
         onConfirm={handleConfirmDelete}
         onClose={() => setDeletingProduto(null)}
       />
-
-      {/* Rodapé Institucional Obrigatório */}
-      <footer className="text-center py-4 text-xs text-slate-500 font-medium">
-        Sistema produzido para ser gratuito. Criado por Bruno Rocha.
-      </footer>
     </div>
   );
 };

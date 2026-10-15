@@ -3,7 +3,9 @@ import {
   Building2,
   Plus,
   Search,
+  RotateCcw,
   Edit2,
+  Trash2,
   Eye,
   Save,
   ArrowLeft,
@@ -13,14 +15,14 @@ import {
   ChevronsRight,
   CheckCircle2,
   XCircle,
+  AlertCircle,
   Hospital,
-  Activity,
-  Calendar,
-  Trash2
+  Power
 } from 'lucide-react';
 import type { CentroCusto, Usuario, EmpresaUnidade } from '../types/index.ts';
 import { useToast } from '../context/ToastContext.tsx';
 import { ConfirmDeleteModal } from './ConfirmDeleteModal.tsx';
+import { CentroCustoAlertBanner } from './CentroCustoAlertBanner.tsx';
 
 interface CentrosCustoViewProps {
   centrosCusto: CentroCusto[];
@@ -37,52 +39,56 @@ export const CentrosCustoView: React.FC<CentrosCustoViewProps> = ({
   onRefresh,
   onVoltar,
 }) => {
-  // Filtros de busca
+  const { toast } = useToast();
+  const isAdmin = currentUser?.perfil === 'admin';
+  const isAlmoxarife = currentUser?.perfil === 'almoxarife';
+  const canAccess = isAdmin || isAlmoxarife;
+
+  // Filtros de Consulta: Código, Nome, Ativo (Todos/Sim/Não)
   const [filtroCodigo, setFiltroCodigo] = useState('');
   const [filtroNome, setFiltroNome] = useState('');
-  const [filtroDepto, setFiltroDepto] = useState('');
-  const [filtroResp, setFiltroResp] = useState('');
-  const [filtroAtivo, setFiltroAtivo] = useState<'todos' | '1' | '0'>('todos');
+  const [filtroAtivo, setFiltroAtivo] = useState<'todos' | 'sim' | 'nao'>('todos');
 
-  // Estado do Formulário em Abas
+  // Estado do Formulário
   const [isFormOpen, setIsFormOpen] = useState(false);
   const [formMode, setFormMode] = useState<'create' | 'edit' | 'view'>('create');
-  const [activeFormTab, setActiveFormTab] = useState<'geral' | 'unidade' | 'consumo'>('geral');
   const [editingId, setEditingId] = useState<number | null>(null);
 
-  // Campos do Formulário
+  // Campos do Formulário: Código (numérico, único), Nome (obrigatório), Responsável (opcional), Ativo (Sim/Não)
   const [formCodigo, setFormCodigo] = useState('');
   const [formNome, setFormNome] = useState('');
-  const [formDepartamento, setFormDepartamento] = useState('');
   const [formResponsavel, setFormResponsavel] = useState('');
-  const [formEmpresaId, setFormEmpresaId] = useState<number>(1);
   const [formAtivo, setFormAtivo] = useState<number>(1);
-  const [formCriadoEm, setFormCriadoEm] = useState('');
+  const [formError, setFormError] = useState<string | null>(null);
+  const [isProcessing, setIsProcessing] = useState(false);
+
+  // Modais de exclusão / inativação
+  const [deletingCentro, setDeletingCentro] = useState<CentroCusto | null>(null);
+  const [inactivatePrompt, setInactivatePrompt] = useState<{
+    centro: CentroCusto;
+    motivo: string;
+  } | null>(null);
 
   // Paginação
   const [currentPage, setCurrentPage] = useState(1);
-  const pageSize = 8;
-  const [isProcessing, setIsProcessing] = useState(false);
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  const [deletingCentro, setDeletingCentro] = useState<CentroCusto | null>(null);
+  const pageSize = 10;
 
-  const { toast } = useToast();
-  const isAdmin = currentUser?.perfil === 'admin';
-
-  // Filtragem dos registros
+  // Filtragem da grade
   const filteredCentros = useMemo(() => {
     return centrosCusto.filter((cc) => {
-      if (filtroCodigo && !cc.codigo.toLowerCase().includes(filtroCodigo.toLowerCase())) return false;
-      if (filtroNome && !cc.nome.toLowerCase().includes(filtroNome.toLowerCase())) return false;
-      if (filtroDepto && !cc.departamento.toLowerCase().includes(filtroDepto.toLowerCase())) return false;
-      if (filtroResp && !cc.responsavel.toLowerCase().includes(filtroResp.toLowerCase())) return false;
+      if (filtroCodigo.trim() && !String(cc.codigo).toLowerCase().includes(filtroCodigo.trim().toLowerCase())) {
+        return false;
+      }
+      if (filtroNome.trim() && !cc.nome.toLowerCase().includes(filtroNome.trim().toLowerCase())) {
+        return false;
+      }
       if (filtroAtivo !== 'todos') {
-        const val = filtroAtivo === '1' ? 1 : 0;
+        const val = filtroAtivo === 'sim' ? 1 : 0;
         if (cc.ativo !== val) return false;
       }
       return true;
     });
-  }, [centrosCusto, filtroCodigo, filtroNome, filtroDepto, filtroResp, filtroAtivo]);
+  }, [centrosCusto, filtroCodigo, filtroNome, filtroAtivo]);
 
   const totalPages = Math.ceil(filteredCentros.length / pageSize) || 1;
   const paginatedCentros = useMemo(() => {
@@ -90,18 +96,49 @@ export const CentrosCustoView: React.FC<CentrosCustoViewProps> = ({
     return filteredCentros.slice(start, start + pageSize);
   }, [filteredCentros, currentPage, pageSize]);
 
+  // Se o usuário não tiver permissão (ex: requisitante)
+  if (!canAccess) {
+    return (
+      <div className="p-8 max-w-2xl mx-auto text-center space-y-4">
+        <div className="p-4 bg-amber-50 rounded-2xl border border-amber-200 inline-block text-amber-700">
+          <Building2 className="w-12 h-12 mx-auto" />
+        </div>
+        <h2 className="text-xl font-bold text-slate-800">Acesso Restrito</h2>
+        <p className="text-sm text-slate-600">
+          O cadastro e gestão de Centros de Custo é restrito ao Administrador (com consulta pelo Almoxarife).
+          Requisitantes têm acesso à Consulta de Saldo em Estoque e às Requisições de Insumos.
+        </p>
+        {onVoltar && (
+          <button
+            type="button"
+            onClick={onVoltar}
+            className="px-4 py-2 bg-teal-700 hover:bg-teal-800 text-white rounded-lg text-xs font-semibold cursor-pointer shadow-sm"
+          >
+            Voltar ao Painel
+          </button>
+        )}
+      </div>
+    );
+  }
+
+  // Ações de formulário
   const handleNovo = () => {
+    // Sugere próximo código numérico
+    let proximoNum = 1;
+    const numerosExistentes = centrosCusto
+      .map((c) => parseInt(c.codigo, 10))
+      .filter((n) => !isNaN(n));
+    if (numerosExistentes.length > 0) {
+      proximoNum = Math.max(...numerosExistentes) + 1;
+    }
+
     setFormMode('create');
     setEditingId(null);
-    setFormCodigo(`CC-SET-0${centrosCusto.length + 1}`);
+    setFormCodigo(String(proximoNum));
     setFormNome('');
-    setFormDepartamento('');
     setFormResponsavel('');
-    setFormEmpresaId(unidades[0]?.id || 1);
     setFormAtivo(1);
-    setFormCriadoEm(new Date().toLocaleString('pt-BR'));
-    setActiveFormTab('geral');
-    setErrorMsg(null);
+    setFormError(null);
     setIsFormOpen(true);
   };
 
@@ -110,19 +147,32 @@ export const CentrosCustoView: React.FC<CentrosCustoViewProps> = ({
     setEditingId(cc.id);
     setFormCodigo(cc.codigo);
     setFormNome(cc.nome);
-    setFormDepartamento(cc.departamento);
-    setFormResponsavel(cc.responsavel);
-    setFormEmpresaId(cc.empresa_id || 1);
+    setFormResponsavel(cc.responsavel || '');
     setFormAtivo(cc.ativo);
-    setFormCriadoEm(cc.criado_em ? new Date(cc.criado_em).toLocaleString('pt-BR') : '29/09/2026');
-    setActiveFormTab('geral');
-    setErrorMsg(null);
+    setFormError(null);
     setIsFormOpen(true);
   };
 
   const handleVisualizar = (cc: CentroCusto) => {
     handleEditar(cc);
     setFormMode('view');
+  };
+
+  const handleLimparForm = () => {
+    if (formMode === 'create') {
+      setFormCodigo('');
+    }
+    setFormNome('');
+    setFormResponsavel('');
+    setFormAtivo(1);
+    setFormError(null);
+  };
+
+  const handleLimparFiltros = () => {
+    setFiltroCodigo('');
+    setFiltroNome('');
+    setFiltroAtivo('todos');
+    setCurrentPage(1);
   };
 
   const handleSalvar = async (e: React.FormEvent) => {
@@ -132,24 +182,29 @@ export const CentrosCustoView: React.FC<CentrosCustoViewProps> = ({
       return;
     }
 
-    if (!formCodigo || !formNome || !formDepartamento || !formResponsavel) {
-      const msg = 'Código, nome, departamento e responsável são obrigatórios.';
-      setErrorMsg(msg);
-      toast.error('Campos Obrigatórios', msg);
-      setActiveFormTab('geral');
+    const codLimpo = formCodigo.trim();
+    if (!codLimpo || !/^\d+$/.test(codLimpo)) {
+      const msg = 'O código deve ser numérico (ex: 1, 2, 101, 102).';
+      setFormError(msg);
+      toast.error('Código Inválido', msg);
+      return;
+    }
+
+    if (!formNome.trim()) {
+      const msg = 'O nome do Centro de Custo é obrigatório.';
+      setFormError(msg);
+      toast.error('Nome Obrigatório', msg);
       return;
     }
 
     setIsProcessing(true);
-    setErrorMsg(null);
+    setFormError(null);
 
     try {
       const payload = {
-        codigo: formCodigo.trim().toUpperCase(),
+        codigo: codLimpo,
         nome: formNome.trim(),
-        departamento: formDepartamento.trim(),
         responsavel: formResponsavel.trim(),
-        empresa_id: formEmpresaId || 1,
         ativo: formAtivo,
       };
 
@@ -170,35 +225,26 @@ export const CentrosCustoView: React.FC<CentrosCustoViewProps> = ({
         throw new Error(data.error || 'Erro ao salvar Centro de Custo.');
       }
 
-      if (formMode === 'create') {
-        toast.success(
-          'Centro de Custo Cadastrado',
-          `O setor "${payload.codigo} - ${payload.nome}" foi criado com sucesso.`
-        );
-      } else {
-        toast.success(
-          'Centro de Custo Atualizado',
-          `Os dados do setor "${payload.codigo} - ${payload.nome}" foram atualizados.`
-        );
-      }
+      toast.success(
+        formMode === 'create' ? 'Centro de Custo Criado' : 'Centro de Custo Atualizado',
+        `Setor "${payload.codigo} - ${payload.nome}" gravado com sucesso.`
+      );
 
       setIsFormOpen(false);
       onRefresh();
     } catch (err: any) {
       const msg = err.message || 'Erro ao processar requisição.';
-      setErrorMsg(msg);
-      toast.error(
-        formMode === 'create' ? 'Erro ao Criar Centro de Custo' : 'Erro ao Editar Centro de Custo',
-        msg
-      );
+      setFormError(msg);
+      toast.error('Falha na Gravação', msg);
     } finally {
       setIsProcessing(false);
     }
   };
 
-  const handleConfirmDelete = async () => {
+  const handleConfirmExcluir = async () => {
     if (!deletingCentro) return;
     setIsProcessing(true);
+
     try {
       const res = await fetch(`/api/centros-custo/${deletingCentro.id}`, {
         method: 'DELETE',
@@ -206,22 +252,51 @@ export const CentrosCustoView: React.FC<CentrosCustoViewProps> = ({
           'Authorization': `user:${currentUser?.id}`,
         },
       });
+
       const data = await res.json();
       if (!res.ok) {
-        throw new Error(data.error || 'Erro ao excluir Centro de Custo.');
+        if (data.canInactivate) {
+          // Exibe aviso para inativação
+          setInactivatePrompt({
+            centro: deletingCentro,
+            motivo: data.error,
+          });
+          setDeletingCentro(null);
+          return;
+        }
+        throw new Error(data.error || 'Falha ao excluir registro.');
       }
 
       toast.success(
         'Centro de Custo Excluído',
-        data.message || `O setor "${deletingCentro.codigo} - ${deletingCentro.nome}" foi excluído.`
+        data.message || `Setor "${deletingCentro.codigo} - ${deletingCentro.nome}" removido.`
       );
-      if (editingId === deletingCentro.id) {
-        setIsFormOpen(false);
-      }
       setDeletingCentro(null);
       onRefresh();
     } catch (err: any) {
-      toast.error('Erro ao Excluir Centro de Custo', err.message || 'Falha ao excluir registro.');
+      toast.error('Exclusão Não Permitida', err.message || 'Erro ao excluir.');
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  const handleInativarDireto = async (cc: CentroCusto) => {
+    setIsProcessing(true);
+    try {
+      const res = await fetch(`/api/centros-custo/${cc.id}/toggle`, {
+        method: 'PATCH',
+        headers: {
+          'Authorization': `user:${currentUser?.id}`,
+        },
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Falha ao inativar.');
+
+      toast.success('Centro de Custo Inativado', `O setor "${cc.codigo} - ${cc.nome}" foi inativado.`);
+      setInactivatePrompt(null);
+      onRefresh();
+    } catch (err: any) {
+      toast.error('Erro ao Inativar', err.message);
     } finally {
       setIsProcessing(false);
     }
@@ -236,250 +311,196 @@ export const CentrosCustoView: React.FC<CentrosCustoViewProps> = ({
             <Building2 className="w-5 h-5" />
           </div>
           <div>
-            <h1 className="text-xl font-bold text-slate-800 tracking-tight">Consulta de Centro de Custo</h1>
-            <p className="text-xs text-slate-500">Unidades solicitantes, enfermarias, centros cirúrgicos e UTIs</p>
+            <div className="flex items-center gap-2">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-teal-700 bg-teal-50 px-2 py-0.5 rounded border border-teal-200">
+                Cadastros &gt; Centros de Custo
+              </span>
+              {isAdmin && (
+                <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
+                  Acesso Total (Admin)
+                </span>
+              )}
+              {isAlmoxarife && (
+                <span className="text-[10px] font-bold uppercase tracking-wider text-slate-600 bg-slate-100 px-2 py-0.5 rounded border border-slate-200">
+                  Apenas Consulta (Almoxarife)
+                </span>
+              )}
+            </div>
+            <h1 className="text-xl font-bold text-slate-800 tracking-tight mt-1">
+              Centros de Custo
+            </h1>
+            <p className="text-xs text-slate-500">
+              Setores solicitantes, enfermarias, unidades de internação, farmácia e almoxarifados locais
+            </p>
           </div>
         </div>
 
-        {onVoltar && (
-          <button
-            type="button"
-            onClick={onVoltar}
-            className="bg-teal-600 hover:bg-teal-700 text-white font-medium px-4 py-2 rounded text-xs flex items-center gap-1.5 transition-all shadow uppercase tracking-wide cursor-pointer"
-          >
-            <ArrowLeft className="w-4 h-4" />
-            <span>VOLTAR AO PAINEL</span>
-          </button>
-        )}
+        <div className="flex items-center gap-2">
+          {isAdmin && !isFormOpen && (
+            <button
+              type="button"
+              onClick={handleNovo}
+              className="bg-teal-700 hover:bg-teal-800 text-white font-semibold px-4 py-2 rounded-lg text-xs flex items-center gap-1.5 transition-all shadow cursor-pointer uppercase tracking-wider"
+            >
+              <Plus className="w-4 h-4" />
+              <span>+ NOVO</span>
+            </button>
+          )}
+
+          {onVoltar && (
+            <button
+              type="button"
+              onClick={onVoltar}
+              className="bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold px-4 py-2 rounded-lg text-xs flex items-center gap-1.5 transition-all border border-slate-200 cursor-pointer uppercase tracking-wider"
+            >
+              <ArrowLeft className="w-4 h-4" />
+              <span>VOLTAR</span>
+            </button>
+          )}
+        </div>
       </div>
 
-      {/* Formulário em Abas (se aberto) */}
-      {isFormOpen && (
-        <div className="bg-white rounded-xl border border-slate-200 shadow-md overflow-hidden animate-fadeIn">
-          <div className="px-6 py-4 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
-            <div>
-              <span className="text-[10px] font-bold uppercase tracking-wider bg-teal-100 text-teal-800 px-2 py-0.5 rounded">
-                {formMode === 'create' ? 'Novo Cadastro' : formMode === 'edit' ? 'Alteração' : 'Visualização'}
-              </span>
-              <h2 className="text-base font-bold text-slate-800 mt-1">
-                {formMode === 'create' ? 'Cadastrar Novo Centro de Custo' : `Centro de Custo: ${formNome} (${formCodigo})`}
+      {/* Banner de Aviso de Estado Inicial Vazio */}
+      {centrosCusto.length === 0 && !isFormOpen && (
+        <CentroCustoAlertBanner
+          isAdmin={isAdmin}
+          onCadastrarCentroCusto={isAdmin ? handleNovo : undefined}
+          mensagemPersonalizada="Nenhum Centro de Custo cadastrado no sistema. Cadastre ao menos um Centro de Custo para começar a movimentar o estoque, cadastrar usuários e receber notas fiscais."
+        />
+      )}
+
+      {/* =========================================================================
+          TELA DE CADASTRO / EDIÇÃO / VISUALIZAÇÃO
+         ========================================================================= */}
+      {isFormOpen ? (
+        <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden animate-fadeIn">
+          <div className="p-4 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Building2 className="w-5 h-5 text-teal-700" />
+              <h2 className="text-base font-bold text-slate-800">
+                {formMode === 'create'
+                  ? 'Novo Centro de Custo'
+                  : formMode === 'edit'
+                  ? `Editar Centro de Custo #${editingId}`
+                  : `Visualizar Centro de Custo #${editingId}`}
               </h2>
             </div>
 
             <button
               type="button"
               onClick={() => setIsFormOpen(false)}
-              className="text-xs font-semibold text-slate-500 hover:text-slate-800 flex items-center gap-1"
+              className="text-xs text-slate-500 hover:text-slate-800 font-medium flex items-center gap-1 cursor-pointer"
             >
               <ArrowLeft className="w-4 h-4" />
-              <span>Voltar para Listagem</span>
+              <span>Voltar para Consulta</span>
             </button>
           </div>
 
-          {errorMsg && (
-            <div className="mx-6 mt-4 p-3 rounded bg-rose-50 border border-rose-200 text-rose-700 text-xs">
-              {errorMsg}
+          {formError && (
+            <div className="m-4 p-3 rounded-lg bg-rose-50 border border-rose-200 text-rose-800 text-xs flex items-center gap-2">
+              <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
+              <span>{formError}</span>
             </div>
           )}
 
-          {/* Abas */}
-          <div className="flex border-b border-slate-200 px-6 pt-2 bg-slate-50/50">
-            <button
-              type="button"
-              onClick={() => setActiveFormTab('geral')}
-              className={`px-5 py-2.5 text-xs font-bold uppercase tracking-wider border-b-2 transition-all cursor-pointer ${
-                activeFormTab === 'geral'
-                  ? 'border-teal-600 text-teal-700 bg-white rounded-t'
-                  : 'border-transparent text-slate-500 hover:text-slate-700'
-              }`}
-            >
-              1. Dados Gerais
-            </button>
-
-            <button
-              type="button"
-              onClick={() => setActiveFormTab('unidade')}
-              className={`px-5 py-2.5 text-xs font-bold uppercase tracking-wider border-b-2 transition-all cursor-pointer ${
-                activeFormTab === 'unidade'
-                  ? 'border-teal-600 text-teal-700 bg-white rounded-t'
-                  : 'border-transparent text-slate-500 hover:text-slate-700'
-              }`}
-            >
-              2. Unidade Hospitalar
-            </button>
-
-            <button
-              type="button"
-              onClick={() => setActiveFormTab('consumo')}
-              className={`px-5 py-2.5 text-xs font-bold uppercase tracking-wider border-b-2 transition-all cursor-pointer ${
-                activeFormTab === 'consumo'
-                  ? 'border-teal-600 text-teal-700 bg-white rounded-t'
-                  : 'border-transparent text-slate-500 hover:text-slate-700'
-              }`}
-            >
-              3. Consumo & Histórico
-            </button>
-          </div>
-
           <form onSubmit={handleSalvar} className="p-6 space-y-6">
-            {activeFormTab === 'geral' && (
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wider mb-1">
-                    Código do Centro de Custo *
-                  </label>
-                  <input
-                    type="text"
-                    value={formCodigo}
-                    onChange={(e) => setFormCodigo(e.target.value)}
-                    disabled={formMode === 'view'}
-                    className="w-full px-3 py-2 bg-[#f1f3f5] border border-slate-300 rounded text-xs text-slate-800 font-mono focus:bg-white focus:border-teal-500 shadow-inner"
-                    placeholder="ex: CC-UTI-01"
-                    required
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wider mb-1">
-                    Nome do Setor / Unidade *
-                  </label>
-                  <input
-                    type="text"
-                    value={formNome}
-                    onChange={(e) => setFormNome(e.target.value)}
-                    disabled={formMode === 'view'}
-                    className="w-full px-3 py-2 bg-[#f1f3f5] border border-slate-300 rounded text-xs text-slate-800 focus:bg-white focus:border-teal-500 shadow-inner"
-                    placeholder="ex: UTI Geral Adulto"
-                    required
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wider mb-1">
-                    Departamento Superior *
-                  </label>
-                  <input
-                    type="text"
-                    value={formDepartamento}
-                    onChange={(e) => setFormDepartamento(e.target.value)}
-                    disabled={formMode === 'view'}
-                    className="w-full px-3 py-2 bg-[#f1f3f5] border border-slate-300 rounded text-xs text-slate-800 focus:bg-white focus:border-teal-500 shadow-inner"
-                    placeholder="ex: Terapia Intensiva"
-                    required
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wider mb-1">
-                    Responsável Clínico / Chefe do Setor *
-                  </label>
-                  <input
-                    type="text"
-                    value={formResponsavel}
-                    onChange={(e) => setFormResponsavel(e.target.value)}
-                    disabled={formMode === 'view'}
-                    className="w-full px-3 py-2 bg-[#f1f3f5] border border-slate-300 rounded text-xs text-slate-800 focus:bg-white focus:border-teal-500 shadow-inner"
-                    placeholder="ex: Dr. Fernando Peixoto"
-                    required
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wider mb-1">
-                    Situação Cadastral
-                  </label>
-                  <select
-                    value={formAtivo}
-                    onChange={(e) => setFormAtivo(Number(e.target.value))}
-                    disabled={formMode === 'view'}
-                    className="w-full px-3 py-2 bg-[#f1f3f5] border border-slate-300 rounded text-xs text-slate-800 focus:bg-white focus:border-teal-500 shadow-inner cursor-pointer"
-                  >
-                    <option value={1}>Ativo (Apto para Requisições)</option>
-                    <option value={0}>Inativo (Bloqueado)</option>
-                  </select>
-                </div>
-              </div>
-            )}
-
-            {activeFormTab === 'unidade' && (
-              <div className="space-y-4 max-w-xl">
-                <div>
-                  <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wider mb-1">
-                    Unidade Hospitalar Vinculada
-                  </label>
-                  <select
-                    value={formEmpresaId}
-                    onChange={(e) => setFormEmpresaId(Number(e.target.value))}
-                    disabled={formMode === 'view'}
-                    className="w-full px-3 py-2 bg-[#f1f3f5] border border-slate-300 rounded text-xs text-slate-800 focus:bg-white focus:border-teal-500 shadow-inner cursor-pointer"
-                  >
-                    {unidades.map((u) => (
-                      <option key={u.id} value={u.id}>
-                        {u.codigo} - {u.nome} ({u.cidade} - {u.uf})
-                      </option>
-                    ))}
-                  </select>
-                  <p className="text-[11px] text-slate-500 mt-1">
-                    As requisições e dispensações para este Centro de Custo serão debitadas do almoxarifado desta unidade.
-                  </p>
-                </div>
-              </div>
-            )}
-
-            {activeFormTab === 'consumo' && (
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 max-w-2xl">
-                <div className="p-4 bg-slate-50 rounded border border-slate-200 space-y-1">
-                  <div className="text-xs font-bold text-slate-700 flex items-center gap-1.5">
-                    <Calendar className="w-4 h-4 text-slate-400" />
-                    <span>Cadastro no Sistema</span>
-                  </div>
-                  <div className="text-xs font-mono text-slate-600">{formCriadoEm}</div>
-                </div>
-
-                <div className="p-4 bg-slate-50 rounded border border-slate-200 space-y-1">
-                  <div className="text-xs font-bold text-slate-700 flex items-center gap-1.5">
-                    <Activity className="w-4 h-4 text-teal-600" />
-                    <span>Perfil de Consumo</span>
-                  </div>
-                  <div className="text-xs text-slate-600">Apto a solicitar materiais de farmácia e cirúrgicos</div>
-                </div>
-              </div>
-            )}
-
-            {/* Rodapé: SALVAR e VOLTAR */}
-            <div className="pt-4 border-t border-slate-200 flex items-center justify-between gap-3">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+              {/* Código (numérico, único) */}
               <div>
-                {formMode === 'edit' && isAdmin && editingId && (
+                <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wider mb-1">
+                  Código (numérico, único) *
+                </label>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  pattern="[0-9]*"
+                  value={formCodigo}
+                  disabled={formMode === 'view'}
+                  onChange={(e) => {
+                    const val = e.target.value.replace(/\D/g, '');
+                    setFormCodigo(val);
+                  }}
+                  placeholder="ex: 101"
+                  className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-lg text-xs font-mono font-bold text-slate-800 focus:bg-white focus:border-teal-500 focus:ring-1 focus:ring-teal-500 disabled:opacity-60"
+                  required
+                />
+                <span className="text-[10px] text-slate-400 mt-1 block">Apenas números.</span>
+              </div>
+
+              {/* Nome (obrigatório) */}
+              <div className="lg:col-span-2">
+                <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wider mb-1">
+                  Nome do Centro de Custo *
+                </label>
+                <input
+                  type="text"
+                  value={formNome}
+                  disabled={formMode === 'view'}
+                  onChange={(e) => setFormNome(e.target.value)}
+                  placeholder="ex: UTI Geral Adulto, Centro Cirúrgico, Enfermaria 3A..."
+                  className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-lg text-xs text-slate-800 focus:bg-white focus:border-teal-500 focus:ring-1 focus:ring-teal-500 disabled:opacity-60"
+                  required
+                />
+              </div>
+
+              {/* Ativo (Sim/Não) */}
+              <div>
+                <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wider mb-1">
+                  Ativo *
+                </label>
+                <select
+                  value={formAtivo}
+                  disabled={formMode === 'view'}
+                  onChange={(e) => setFormAtivo(Number(e.target.value))}
+                  className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-lg text-xs text-slate-800 focus:bg-white focus:border-teal-500 disabled:opacity-60 cursor-pointer"
+                >
+                  <option value={1}>Sim (Ativo)</option>
+                  <option value={0}>Não (Inativo)</option>
+                </select>
+              </div>
+
+              {/* Responsável (opcional) */}
+              <div className="lg:col-span-4">
+                <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wider mb-1">
+                  Responsável (opcional)
+                </label>
+                <input
+                  type="text"
+                  value={formResponsavel}
+                  disabled={formMode === 'view'}
+                  onChange={(e) => setFormResponsavel(e.target.value)}
+                  placeholder="ex: Dr. Carlos Mendes, Enf. Roberta Lima..."
+                  className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-lg text-xs text-slate-800 focus:bg-white focus:border-teal-500 focus:ring-1 focus:ring-teal-500 disabled:opacity-60"
+                />
+              </div>
+            </div>
+
+            {/* Botões do Formulário: VOLTAR, LIMPAR, SALVAR */}
+            <div className="pt-4 border-t border-slate-200 flex items-center justify-between gap-3">
+              <button
+                type="button"
+                onClick={() => setIsFormOpen(false)}
+                className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-semibold cursor-pointer border border-slate-300 uppercase tracking-wider"
+              >
+                VOLTAR
+              </button>
+
+              <div className="flex items-center gap-2">
+                {formMode !== 'view' && (
                   <button
                     type="button"
-                    onClick={() => {
-                      const target = centrosCusto.find((c) => c.id === editingId);
-                      if (target) setDeletingCentro(target);
-                    }}
-                    disabled={isProcessing}
-                    className="bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 font-semibold px-4 py-2 rounded text-xs flex items-center gap-1.5 transition-all uppercase tracking-wide cursor-pointer disabled:opacity-50"
+                    onClick={handleLimparForm}
+                    className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-semibold cursor-pointer border border-slate-300 uppercase tracking-wider"
                   >
-                    <Trash2 className="w-4 h-4" />
-                    <span>EXCLUIR SETOR</span>
+                    LIMPAR
                   </button>
                 )}
-              </div>
-
-              <div className="flex items-center gap-3">
-                <button
-                  type="button"
-                  onClick={() => setIsFormOpen(false)}
-                  className="bg-teal-600 hover:bg-teal-700 text-white font-medium px-4 py-2 rounded text-xs flex items-center gap-1.5 transition-all shadow uppercase tracking-wide cursor-pointer"
-                >
-                  <ArrowLeft className="w-4 h-4" />
-                  <span>VOLTAR</span>
-                </button>
 
                 {formMode !== 'view' && (
                   <button
                     type="submit"
                     disabled={isProcessing}
-                    className="bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white font-medium px-5 py-2 rounded text-xs flex items-center gap-1.5 transition-all shadow uppercase tracking-wide cursor-pointer disabled:opacity-50"
+                    className="px-5 py-2 bg-teal-700 hover:bg-teal-800 text-white rounded-lg text-xs font-semibold cursor-pointer shadow flex items-center gap-1.5 uppercase tracking-wider disabled:opacity-50"
                   >
                     <Save className="w-4 h-4" />
                     <span>{isProcessing ? 'SALVANDO...' : 'SALVAR'}</span>
@@ -489,243 +510,274 @@ export const CentrosCustoView: React.FC<CentrosCustoViewProps> = ({
             </div>
           </form>
         </div>
+      ) : (
+        /* =========================================================================
+            TELA DE CONSULTA DE CENTRO DE CUSTO
+           ========================================================================= */
+        <div className="space-y-4">
+          {/* Barra de Filtros: Código, Nome, Ativo (Todos/Sim/Não) */}
+          <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3">
+              <div>
+                <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wider mb-1">
+                  Código
+                </label>
+                <div className="relative">
+                  <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-2.5" />
+                  <input
+                    type="text"
+                    value={filtroCodigo}
+                    onChange={(e) => {
+                      setFiltroCodigo(e.target.value);
+                      setCurrentPage(1);
+                    }}
+                    placeholder="Filtrar por código..."
+                    className="w-full pl-8 pr-3 py-1.5 bg-slate-50 border border-slate-300 rounded-lg text-xs text-slate-800 focus:bg-white focus:border-teal-500"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wider mb-1">
+                  Nome do Centro de Custo
+                </label>
+                <div className="relative">
+                  <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-2.5" />
+                  <input
+                    type="text"
+                    value={filtroNome}
+                    onChange={(e) => {
+                      setFiltroNome(e.target.value);
+                      setCurrentPage(1);
+                    }}
+                    placeholder="Filtrar por nome..."
+                    className="w-full pl-8 pr-3 py-1.5 bg-slate-50 border border-slate-300 rounded-lg text-xs text-slate-800 focus:bg-white focus:border-teal-500"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wider mb-1">
+                  Ativo
+                </label>
+                <select
+                  value={filtroAtivo}
+                  onChange={(e) => {
+                    setFiltroAtivo(e.target.value as any);
+                    setCurrentPage(1);
+                  }}
+                  className="w-full px-3 py-1.5 bg-slate-50 border border-slate-300 rounded-lg text-xs text-slate-800 focus:bg-white focus:border-teal-500 cursor-pointer"
+                >
+                  <option value="todos">Todos</option>
+                  <option value="sim">Sim (Ativos)</option>
+                  <option value="nao">Não (Inativos)</option>
+                </select>
+              </div>
+
+              <div className="flex items-end gap-2">
+                <button
+                  type="button"
+                  onClick={handleLimparFiltros}
+                  className="w-full py-1.5 px-3 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold border border-slate-300 flex items-center justify-center gap-1.5 cursor-pointer uppercase tracking-wider"
+                >
+                  <RotateCcw className="w-3.5 h-3.5" />
+                  <span>LIMPAR FILTROS</span>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* Grade de Consulta: Código | Nome | Responsável | Ativo */}
+          <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs border-collapse">
+                <thead>
+                  <tr className="bg-slate-100 border-b border-slate-200 text-slate-700 font-bold uppercase tracking-wider text-[11px]">
+                    <th className="py-3 px-4">Código</th>
+                    <th className="py-3 px-4">Nome</th>
+                    <th className="py-3 px-4">Responsável</th>
+                    <th className="py-3 px-4">Ativo</th>
+                    <th className="py-3 px-4 text-right">Ações</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {paginatedCentros.length > 0 ? (
+                    paginatedCentros.map((cc) => (
+                      <tr key={cc.id} className="hover:bg-slate-50/80 transition-colors">
+                        <td className="py-3 px-4 font-mono font-bold text-teal-800">
+                          {cc.codigo}
+                        </td>
+                        <td className="py-3 px-4 font-semibold text-slate-800">
+                          {cc.nome}
+                        </td>
+                        <td className="py-3 px-4 text-slate-600">
+                          {cc.responsavel && cc.responsavel.trim() ? cc.responsavel : (
+                            <span className="text-slate-400 italic">Não informado</span>
+                          )}
+                        </td>
+                        <td className="py-3 px-4">
+                          {cc.ativo === 1 ? (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase bg-emerald-100 text-emerald-800 border border-emerald-200">
+                              <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+                              <span>Sim</span>
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase bg-slate-100 text-slate-600 border border-slate-200">
+                              <XCircle className="w-3 h-3 text-slate-500" />
+                              <span>Não</span>
+                            </span>
+                          )}
+                        </td>
+                        <td className="py-3 px-4 text-right whitespace-nowrap">
+                          {isAdmin ? (
+                            <div className="flex items-center justify-end gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() => handleEditar(cc)}
+                                title="Editar Centro de Custo"
+                                className="p-1.5 rounded-md hover:bg-slate-100 text-slate-600 hover:text-teal-700 transition-colors cursor-pointer"
+                              >
+                                <Edit2 className="w-4 h-4" />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setDeletingCentro(cc)}
+                                title="Excluir Centro de Custo"
+                                className="p-1.5 rounded-md hover:bg-rose-50 text-slate-400 hover:text-rose-600 transition-colors cursor-pointer"
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </button>
+                            </div>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => handleVisualizar(cc)}
+                              title="Visualizar dados do Centro de Custo"
+                              className="px-2.5 py-1 rounded bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold flex items-center gap-1 ml-auto cursor-pointer"
+                            >
+                              <Eye className="w-3.5 h-3.5" />
+                              <span>Visualizar</span>
+                            </button>
+                          )}
+                        </td>
+                      </tr>
+                    ))
+                  ) : (
+                    <tr>
+                      <td colSpan={5} className="py-8 text-center text-slate-400">
+                        Nenhum centro de custo encontrado com os filtros aplicados.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+
+            {/* Paginação */}
+            <div className="p-3 bg-slate-50 border-t border-slate-200 flex items-center justify-between text-xs text-slate-600">
+              <span>
+                Total: <strong>{filteredCentros.length}</strong> registro(s) encontrado(s)
+              </span>
+
+              {totalPages > 1 && (
+                <div className="flex items-center gap-1">
+                  <button
+                    type="button"
+                    disabled={currentPage === 1}
+                    onClick={() => setCurrentPage(1)}
+                    className="p-1 rounded hover:bg-slate-200 disabled:opacity-40 cursor-pointer"
+                  >
+                    <ChevronsLeft className="w-4 h-4" />
+                  </button>
+                  <button
+                    type="button"
+                    disabled={currentPage === 1}
+                    onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+                    className="p-1 rounded hover:bg-slate-200 disabled:opacity-40 cursor-pointer"
+                  >
+                    <ChevronLeft className="w-4 h-4" />
+                  </button>
+                  <span className="px-2 font-medium">
+                    Página {currentPage} de {totalPages}
+                  </span>
+                  <button
+                    type="button"
+                    disabled={currentPage === totalPages}
+                    onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+                    className="p-1 rounded hover:bg-slate-200 disabled:opacity-40 cursor-pointer"
+                  >
+                    <ChevronRight className="w-4 h-4" />
+                  </button>
+                  <button
+                    type="button"
+                    disabled={currentPage === totalPages}
+                    onClick={() => setCurrentPage(totalPages)}
+                    className="p-1 rounded hover:bg-slate-200 disabled:opacity-40 cursor-pointer"
+                  >
+                    <ChevronsRight className="w-4 h-4" />
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
       )}
 
-      {/* Filtros e Tabela de Consulta */}
-      <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm space-y-4">
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-          <div>
-            <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1">
-              Código
-            </label>
-            <input
-              type="text"
-              value={filtroCodigo}
-              onChange={(e) => { setFiltroCodigo(e.target.value); setCurrentPage(1); }}
-              placeholder="ex: CC-UTI-01"
-              className="w-full px-3 py-2 bg-[#f1f3f5] border border-slate-300 rounded text-xs text-slate-800 focus:bg-white focus:border-teal-500 shadow-inner"
-            />
-          </div>
+      {/* Modal de Confirmação de Exclusão */}
+      {deletingCentro && (
+        <ConfirmDeleteModal
+          isOpen={!!deletingCentro}
+          title="Excluir Centro de Custo"
+          entityName={`${deletingCentro.codigo} - ${deletingCentro.nome}`}
+          description="A exclusão definitiva só será permitida se não houver nenhuma movimentação, requisição, inventário ou usuário vinculado a este setor. Caso contrário, ele deverá ser inativado."
+          isProcessing={isProcessing}
+          onConfirm={handleConfirmExcluir}
+          onClose={() => setDeletingCentro(null)}
+        />
+      )}
 
-          <div>
-            <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1">
-              Nome do Setor
-            </label>
-            <input
-              type="text"
-              value={filtroNome}
-              onChange={(e) => { setFiltroNome(e.target.value); setCurrentPage(1); }}
-              placeholder="ex: UTI Geral"
-              className="w-full px-3 py-2 bg-[#f1f3f5] border border-slate-300 rounded text-xs text-slate-800 focus:bg-white focus:border-teal-500 shadow-inner"
-            />
-          </div>
+      {/* Modal de Alerta quando o Centro de Custo possui vínculos e deve ser apenas Inativado */}
+      {inactivatePrompt && (
+        <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-xl shadow-xl max-w-md w-full p-6 space-y-4 animate-scaleUp">
+            <div className="flex items-center gap-3 text-amber-700">
+              <div className="p-2.5 bg-amber-100 rounded-full">
+                <AlertCircle className="w-6 h-6" />
+              </div>
+              <h3 className="text-base font-bold text-slate-800">
+                Exclusão Bloqueada por Integridade
+              </h3>
+            </div>
 
-          <div>
-            <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1">
-              Departamento
-            </label>
-            <input
-              type="text"
-              value={filtroDepto}
-              onChange={(e) => { setFiltroDepto(e.target.value); setCurrentPage(1); }}
-              placeholder="ex: Terapia Intensiva"
-              className="w-full px-3 py-2 bg-[#f1f3f5] border border-slate-300 rounded text-xs text-slate-800 focus:bg-white focus:border-teal-500 shadow-inner"
-            />
-          </div>
-        </div>
+            <p className="text-xs text-slate-600 leading-relaxed">
+              {inactivatePrompt.motivo}
+            </p>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-3 items-end">
-          <div>
-            <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1">
-              Responsável
-            </label>
-            <input
-              type="text"
-              value={filtroResp}
-              onChange={(e) => { setFiltroResp(e.target.value); setCurrentPage(1); }}
-              placeholder="Pesquisar por responsável..."
-              className="w-full px-3 py-2 bg-[#f1f3f5] border border-slate-300 rounded text-xs text-slate-800 focus:bg-white focus:border-teal-500 shadow-inner"
-            />
-          </div>
+            <div className="p-3 bg-amber-50 rounded-lg border border-amber-200 text-xs text-amber-900">
+              <strong>Recomendação:</strong> Desative este Centro de Custo para que ele não apareça em novas requisições ou movimentações, preservando o histórico de auditoria.
+            </div>
 
-          <div>
-            <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1">
-              Ativo
-            </label>
-            <select
-              value={filtroAtivo}
-              onChange={(e) => { setFiltroAtivo(e.target.value as any); setCurrentPage(1); }}
-              className="w-full px-3 py-2 bg-[#f1f3f5] border border-slate-300 rounded text-xs text-slate-800 focus:bg-white focus:border-teal-500 shadow-inner cursor-pointer"
-            >
-              <option value="todos">TODOS</option>
-              <option value="1">SIM (Ativo)</option>
-              <option value="0">NÃO (Inativo)</option>
-            </select>
+            <div className="pt-2 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setInactivatePrompt(null)}
+                className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-semibold cursor-pointer border border-slate-300"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                disabled={isProcessing}
+                onClick={() => handleInativarDireto(inactivatePrompt.centro)}
+                className="px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-xs font-semibold cursor-pointer flex items-center gap-1.5 shadow"
+              >
+                <Power className="w-3.5 h-3.5" />
+                <span>Inativar Centro de Custo</span>
+              </button>
+            </div>
           </div>
         </div>
-
-        {/* Botões: + NOVO e PESQUISAR */}
-        <div className="pt-2 border-t border-slate-100 flex items-center justify-end gap-3">
-          {isAdmin && (
-            <button
-              type="button"
-              onClick={handleNovo}
-              className="bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white font-medium px-4 py-2 rounded text-xs flex items-center gap-1.5 transition-all shadow uppercase tracking-wide cursor-pointer"
-            >
-              <Plus className="w-4 h-4" />
-              <span>+ NOVO</span>
-            </button>
-          )}
-
-          <button
-            type="button"
-            onClick={() => setCurrentPage(1)}
-            className="border border-teal-600 text-teal-700 hover:bg-teal-50 font-medium px-4 py-2 rounded text-xs flex items-center gap-1.5 transition-all uppercase tracking-wide cursor-pointer"
-          >
-            <Search className="w-4 h-4" />
-            <span>PESQUISAR</span>
-          </button>
-        </div>
-      </div>
-
-      {/* Tabela de Resultados Zebrada */}
-      <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs">
-            <thead className="bg-slate-100 text-slate-700 font-bold uppercase tracking-wider border-b border-slate-200">
-              <tr>
-                <th className="py-2.5 px-3">Código</th>
-                <th className="py-2.5 px-3">Nome do Centro de Custo</th>
-                <th className="py-2.5 px-3">Departamento</th>
-                <th className="py-2.5 px-3">Responsável</th>
-                <th className="py-2.5 px-3">Unidade</th>
-                <th className="py-2.5 px-3 text-center">Ativo</th>
-                <th className="py-2.5 px-3 text-right">Ações</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-200">
-              {paginatedCentros.length > 0 ? (
-                paginatedCentros.map((cc) => (
-                  <tr key={cc.id} className="odd:bg-white even:bg-slate-50/70 hover:bg-teal-50/40 transition-colors">
-                    <td className="py-2 px-3 font-mono font-semibold text-slate-700">{cc.codigo}</td>
-                    <td className="py-2 px-3 font-medium text-slate-800">{cc.nome}</td>
-                    <td className="py-2 px-3 text-slate-600">{cc.departamento}</td>
-                    <td className="py-2 px-3 text-slate-600">{cc.responsavel}</td>
-                    <td className="py-2 px-3 text-slate-600">{cc.empresa_nome || 'Almoxarifado Central'}</td>
-                    <td className="py-2 px-3 text-center">
-                      {cc.ativo ? (
-                        <span className="inline-flex items-center gap-1 text-emerald-700 font-bold bg-emerald-50 px-2 py-0.5 rounded text-[10px] border border-emerald-200">
-                          <CheckCircle2 className="w-3 h-3" />
-                          <span>SIM</span>
-                        </span>
-                      ) : (
-                        <span className="inline-flex items-center gap-1 text-slate-500 font-bold bg-slate-100 px-2 py-0.5 rounded text-[10px] border border-slate-200">
-                          <XCircle className="w-3 h-3" />
-                          <span>NÃO</span>
-                        </span>
-                      )}
-                    </td>
-                    <td className="py-2 px-3 text-right">
-                      <div className="flex items-center justify-end gap-1">
-                        <button
-                          type="button"
-                          onClick={() => handleVisualizar(cc)}
-                          className="p-1.5 rounded hover:bg-slate-200 text-slate-500 hover:text-slate-800 transition-colors"
-                          title="Visualizar"
-                        >
-                          <Eye className="w-4 h-4" />
-                        </button>
-                        {isAdmin && (
-                          <>
-                            <button
-                              type="button"
-                              onClick={() => handleEditar(cc)}
-                              className="p-1.5 rounded hover:bg-teal-100 text-teal-700 transition-colors cursor-pointer"
-                              title="Editar Centro de Custo"
-                            >
-                              <Edit2 className="w-4 h-4" />
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => setDeletingCentro(cc)}
-                              className="p-1.5 rounded hover:bg-rose-100 text-rose-600 transition-colors cursor-pointer"
-                              title="Excluir Centro de Custo"
-                            >
-                              <Trash2 className="w-4 h-4" />
-                            </button>
-                          </>
-                        )}
-                      </div>
-                    </td>
-                  </tr>
-                ))
-              ) : (
-                <tr>
-                  <td colSpan={7} className="py-8 text-center text-slate-500">
-                    Nenhum Centro de Custo localizado para os filtros informados.
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-
-        {/* Rodapé: Contador e Paginação */}
-        <div className="px-4 py-3 bg-slate-50 border-t border-slate-200 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-slate-600">
-          <div>
-            <strong>{filteredCentros.length}</strong> registro(s) encontrado(s)
-          </div>
-
-          <div className="flex items-center gap-1">
-            <button
-              type="button"
-              onClick={() => setCurrentPage(1)}
-              disabled={currentPage === 1}
-              className="p-1.5 rounded border border-slate-300 bg-white hover:bg-slate-50 disabled:opacity-40 transition-all cursor-pointer"
-            >
-              <ChevronsLeft className="w-4 h-4" />
-            </button>
-            <button
-              type="button"
-              onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
-              disabled={currentPage === 1}
-              className="p-1.5 rounded border border-slate-300 bg-white hover:bg-slate-50 disabled:opacity-40 transition-all cursor-pointer"
-            >
-              <ChevronLeft className="w-4 h-4" />
-            </button>
-            <span className="px-3 py-1 font-semibold text-slate-700">
-              Página {currentPage} de {totalPages}
-            </span>
-            <button
-              type="button"
-              onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
-              disabled={currentPage === totalPages}
-              className="p-1.5 rounded border border-slate-300 bg-white hover:bg-slate-50 disabled:opacity-40 transition-all cursor-pointer"
-            >
-              <ChevronRight className="w-4 h-4" />
-            </button>
-            <button
-              type="button"
-              onClick={() => setCurrentPage(totalPages)}
-              disabled={currentPage === totalPages}
-              className="p-1.5 rounded border border-slate-300 bg-white hover:bg-slate-50 disabled:opacity-40 transition-all cursor-pointer"
-            >
-              <ChevronsRight className="w-4 h-4" />
-            </button>
-          </div>
-        </div>
-      </div>
-
-      <ConfirmDeleteModal
-        isOpen={!!deletingCentro}
-        title="Excluir Centro de Custo"
-        entityCode={deletingCentro?.codigo}
-        entityName={deletingCentro?.nome || ''}
-        description="Esta ação removerá o Centro de Custo do cadastro, desde que não existam requisições pendentes ou empréstimos ativos vinculados ao setor."
-        isProcessing={isProcessing}
-        onConfirm={handleConfirmDelete}
-        onClose={() => setDeletingCentro(null)}
-      />
+      )}
     </div>
   );
 };

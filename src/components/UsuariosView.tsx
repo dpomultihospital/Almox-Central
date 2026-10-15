@@ -25,6 +25,7 @@ import {
 import type { Usuario, CentroCusto, PerfilUsuario, EmpresaUnidade } from '../types/index.ts';
 import { useToast } from '../context/ToastContext.tsx';
 import { ConfirmDeleteModal } from './ConfirmDeleteModal.tsx';
+import { CentroCustoAlertBanner } from './CentroCustoAlertBanner.tsx';
 
 interface UsuariosViewProps {
   usuarios: Usuario[];
@@ -33,6 +34,7 @@ interface UsuariosViewProps {
   currentUser: Usuario | null;
   onRefresh: () => void;
   onVoltar?: () => void;
+  onNavigate?: (tab: string) => void;
 }
 
 export const UsuariosView: React.FC<UsuariosViewProps> = ({
@@ -42,6 +44,7 @@ export const UsuariosView: React.FC<UsuariosViewProps> = ({
   currentUser,
   onRefresh,
   onVoltar,
+  onNavigate,
 }) => {
   // Filtros de busca em duas linhas
   const [filtroCodigo, setFiltroCodigo] = useState('');
@@ -344,6 +347,15 @@ export const UsuariosView: React.FC<UsuariosViewProps> = ({
         )}
       </div>
 
+      {/* Aviso de Centro de Custo Vazio */}
+      {centrosCusto.length === 0 && (
+        <CentroCustoAlertBanner
+          isAdmin={isAdmin}
+          onCadastrarCentroCusto={onNavigate ? () => onNavigate('centros-custo') : undefined}
+          mensagemPersonalizada="Cadastre ao menos um Centro de Custo para começar a vincular usuários e setores da instituição."
+        />
+      )}
+
       {/* =========================================================================
           SEÇÃO 1: FORMULÁRIO DE CADASTRO / EDIÇÃO EM ABAS (SE ABERTO)
          ========================================================================= */}
@@ -523,22 +535,51 @@ export const UsuariosView: React.FC<UsuariosViewProps> = ({
                 </div>
 
                 <div>
-                  <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wider mb-1">
-                    Centro de Custo Solicitante {formPerfil === 'requisitante' && '*'}
-                  </label>
-                  <select
-                    value={formCcId}
-                    onChange={(e) => setFormCcId(e.target.value ? Number(e.target.value) : '')}
-                    disabled={formMode === 'view'}
-                    className="w-full px-3 py-2 bg-[#f1f3f5] border border-slate-300 rounded text-xs text-slate-800 focus:bg-white focus:border-teal-500 shadow-inner cursor-pointer"
-                  >
-                    <option value="">(Selecione o Centro de Custo)</option>
-                    {centrosCusto.map((cc) => (
-                      <option key={cc.id} value={cc.id}>
-                        {cc.codigo} - {cc.nome} ({cc.departamento})
-                      </option>
-                    ))}
-                  </select>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wider">
+                      Centro de Custo Solicitante {formPerfil === 'requisitante' && '*'}
+                    </label>
+                    {isAdmin && onNavigate && (
+                      <button
+                        type="button"
+                        onClick={() => onNavigate('centros-custo')}
+                        className="text-[10px] font-bold text-teal-700 hover:text-teal-900 hover:underline flex items-center gap-0.5 cursor-pointer"
+                      >
+                        <Plus className="w-3 h-3" />
+                        <span>Cadastrar novo centro de custo</span>
+                      </button>
+                    )}
+                  </div>
+                  {centrosCusto.length > 0 ? (
+                    <select
+                      value={formCcId}
+                      onChange={(e) => setFormCcId(e.target.value ? Number(e.target.value) : '')}
+                      disabled={formMode === 'view'}
+                      className="w-full px-3 py-2 bg-[#f1f3f5] border border-slate-300 rounded text-xs text-slate-800 focus:bg-white focus:border-teal-500 shadow-inner cursor-pointer"
+                    >
+                      <option value="">(Selecione o Centro de Custo)</option>
+                      {centrosCusto.map((cc) => (
+                        <option key={cc.id} value={cc.id}>
+                          {cc.codigo} - {cc.nome}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <div className="p-2.5 rounded bg-amber-50 border border-amber-300 text-amber-900 text-xs">
+                      <span>Nenhum Centro de Custo cadastrado. </span>
+                      {isAdmin && onNavigate ? (
+                        <button
+                          type="button"
+                          onClick={() => onNavigate('centros-custo')}
+                          className="font-bold underline text-teal-800 hover:text-teal-950 cursor-pointer ml-1"
+                        >
+                          Cadastre ao menos um Centro de Custo para começar
+                        </button>
+                      ) : (
+                        <span>Cadastre ao menos um Centro de Custo para começar.</span>
+                      )}
+                    </div>
+                  )}
                 </div>
 
                 <div>

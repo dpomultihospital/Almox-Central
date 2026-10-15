@@ -22,6 +22,7 @@ import { ConsumoMensalChart } from './ConsumoMensalChart.tsx';
 import { finalizeJsPDF, type PdfGeneratedDocument, type PdfOutputMode } from '../utils/pdfGenerator.ts';
 import { PdfPrintModal } from './PdfPrintModal.tsx';
 import { HelpFloatingModal } from './HelpFloatingModal.tsx';
+import { CentroCustoAlertBanner } from './CentroCustoAlertBanner.tsx';
 import type { CentroCusto, Produto, Movimentacao, EmpresaUnidade, Usuario, DashboardStats } from '../types/index.ts';
 
 interface RelatoriosViewProps {
@@ -32,6 +33,7 @@ interface RelatoriosViewProps {
   activeUnidade?: EmpresaUnidade | null;
   currentUser?: Usuario | null;
   onVoltar: () => void;
+  onNavigate?: (tab: string) => void;
 }
 
 // Utilitário para carregar o logo em Base64 para inclusão no cabeçalho do PDF
@@ -59,6 +61,7 @@ export const RelatoriosView: React.FC<RelatoriosViewProps> = ({
   activeUnidade,
   currentUser,
   onVoltar,
+  onNavigate,
 }) => {
   const [activeTab, setActiveTab] = useState<'padrao' | 'personalizados'>('padrao');
   const [searchTerm, setSearchTerm] = useState('');
@@ -425,7 +428,7 @@ export const RelatoriosView: React.FC<RelatoriosViewProps> = ({
       doc.setFontSize(7.5);
       doc.setTextColor(148, 163, 184);
       doc.text(
-        `AlmoxControl — Desenvolvido por Bruno Rocha | Emitido por: ${currentUser?.nome || 'Gestor'}`,
+        `AlmoxControl — Desenvolvido por Bruno Rocha - DPO | Emitido por: ${currentUser?.nome || 'Gestor'}`,
         14,
         pageHeight - 8
       );
@@ -938,7 +941,7 @@ export const RelatoriosView: React.FC<RelatoriosViewProps> = ({
         doc.setFontSize(7.5);
         doc.setTextColor(148, 163, 184);
         doc.text(
-          `AlmoxControl — Relatório Geral Consolidado do Almoxarifado | Desenvolvido por Bruno Rocha`,
+          `AlmoxControl — Relatório Geral Consolidado do Almoxarifado | Desenvolvido por Bruno Rocha - DPO`,
           14,
           pageHeight - 8
         );
@@ -992,6 +995,16 @@ export const RelatoriosView: React.FC<RelatoriosViewProps> = ({
           </button>
         </div>
       )}
+
+      {/* Alerta de Centro de Custo Vazio */}
+      {centrosCusto.length === 0 && (
+        <CentroCustoAlertBanner
+          isAdmin={currentUser?.perfil === 'admin'}
+          onCadastrarCentroCusto={() => onNavigate?.('centros-custo')}
+          mensagemPersonalizada="Cadastre ao menos um Centro de Custo para começar a utilizar os relatórios, inventários e controle de saldos."
+        />
+      )}
+
       {/* =========================================================================
           BARRA DE FERRAMENTAS SUPERIOR: Título, Busca, Relatório Geral e VOLTAR
          ========================================================================= */}

@@ -17,7 +17,10 @@ import {
   HardDriveDownload,
   Truck,
   ArrowLeftRight,
-  Boxes
+  Boxes,
+  PackageCheck,
+  AlertCircle,
+  FileSpreadsheet
 } from 'lucide-react';
 import type { Usuario, EmpresaUnidade, Produto, Requisicao } from '../types/index.ts';
 import { NotificationsDropdown } from './NotificationsDropdown.tsx';
@@ -27,6 +30,7 @@ interface ModuleGridViewProps {
   activeUnidade?: EmpresaUnidade | null;
   produtos?: Produto[];
   requisicoes?: Requisicao[];
+  centrosCustoCount?: number;
   requisicoesPendentesCount: number;
   emprestimosAtrasadosCount: number;
   itensEstoqueBaixoCount: number;
@@ -39,6 +43,7 @@ export const ModuleGridView: React.FC<ModuleGridViewProps> = ({
   activeUnidade,
   produtos = [],
   requisicoes = [],
+  centrosCustoCount = 0,
   requisicoesPendentesCount,
   emprestimosAtrasadosCount,
   itensEstoqueBaixoCount,
@@ -65,6 +70,15 @@ export const ModuleGridView: React.FC<ModuleGridViewProps> = ({
       icon: Package,
       badge: itensEstoqueBaixoCount > 0 ? `${itensEstoqueBaixoCount} crítico` : 'Etapa 2',
       badgeColor: itensEstoqueBaixoCount > 0 ? 'bg-rose-500 text-white' : 'bg-teal-600 text-white',
+      allowedRoles: ['admin', 'almoxarife', 'requisitante'],
+    },
+    {
+      id: 'saldo-estoque',
+      label: 'Consulta de Saldo em Estoque',
+      descricao: 'Conferência detalhada de saldo total, lotes FEFO e valores em estoque',
+      icon: PackageCheck,
+      badge: 'Consulta',
+      badgeColor: 'bg-teal-600 text-white',
       allowedRoles: ['admin', 'almoxarife', 'requisitante'],
     },
     {
@@ -121,11 +135,11 @@ export const ModuleGridView: React.FC<ModuleGridViewProps> = ({
     },
     {
       id: 'centros-custo',
-      label: 'Centro de Custo',
-      descricao: 'Departamentos e setores assistenciais hospitalares',
+      label: 'Centros de Custo',
+      descricao: 'Departamentos e setores hospitalares',
       icon: Building2,
       badge: null,
-      allowedRoles: ['admin', 'almoxarife', 'requisitante'],
+      allowedRoles: ['admin', 'almoxarife'],
     },
     {
       id: 'usuarios',
@@ -151,6 +165,15 @@ export const ModuleGridView: React.FC<ModuleGridViewProps> = ({
       icon: UserCheck,
       badge: null,
       allowedRoles: ['admin', 'almoxarife', 'requisitante'],
+    },
+    {
+      id: 'importacao-cadastros',
+      label: 'Importação de Cadastros',
+      descricao: 'Importar produtos (.xls/.xlsx/.csv) e fornecedores com validação de duplicidade e prévia',
+      icon: FileSpreadsheet,
+      badge: 'Admin',
+      badgeColor: 'bg-indigo-600 text-white',
+      allowedRoles: ['admin'],
     },
     {
       id: 'backup',
@@ -247,6 +270,41 @@ export const ModuleGridView: React.FC<ModuleGridViewProps> = ({
           CORPO PRINCIPAL: Grid de Ícones Translúcidos sobre o Gradiente Teal
          ========================================================================= */}
       <main className="flex-1 w-full max-w-6xl mx-auto px-6 py-12 flex flex-col justify-center">
+        {/* Aviso de Centro de Custo Vazio */}
+        {centrosCustoCount === 0 && (
+          <div className="mb-6 p-4 rounded-xl bg-amber-500/20 border border-amber-400/40 backdrop-blur-md flex flex-wrap items-center justify-between gap-3 animate-fadeIn">
+            <div className="flex items-center gap-3">
+              <div className="p-2 bg-amber-400 text-slate-900 rounded-lg shrink-0 font-bold">
+                <Building2 className="w-5 h-5" />
+              </div>
+              <div>
+                <h4 className="text-sm font-bold text-amber-100 flex items-center gap-1.5">
+                  <AlertCircle className="w-4 h-4 text-amber-300 shrink-0" />
+                  <span>Cadastre ao menos um Centro de Custo para começar</span>
+                </h4>
+                <p className="text-xs text-amber-200/80 mt-0.5">
+                  O sistema inicia vazio. Para vincular operadores, realizar requisições e dar entrada de insumos, cadastre os centros de custo da instituição.
+                </p>
+              </div>
+            </div>
+
+            {currentUser.perfil === 'admin' ? (
+              <button
+                type="button"
+                onClick={() => onSelectModule('centros-custo')}
+                className="px-4 py-2 rounded-lg bg-teal-500 hover:bg-teal-400 text-slate-950 font-bold text-xs flex items-center gap-1.5 shadow transition-colors cursor-pointer"
+              >
+                <span>Cadastrar Centro de Custo</span>
+                <ArrowRight className="w-4 h-4" />
+              </button>
+            ) : (
+              <span className="text-xs text-amber-200/90 font-medium">
+                Solicite ao Administrador o cadastro do primeiro setor/centro de custo.
+              </span>
+            )}
+          </div>
+        )}
+
         {/* Banner discreto com notificações/alertas */}
         {(requisicoesPendentesCount > 0 || emprestimosAtrasadosCount > 0 || itensEstoqueBaixoCount > 0) && (
           <div className="mb-8 p-4 rounded-xl bg-white/10 border border-white/15 backdrop-blur-md flex flex-wrap items-center justify-between gap-4">
@@ -337,35 +395,11 @@ export const ModuleGridView: React.FC<ModuleGridViewProps> = ({
       </main>
 
       {/* =========================================================================
-          RODAPÉ DO DASHBOARD: Informações do Sistema e Alternador de Operador
+      {/* =========================================================================
+          RODAPÉ ÚNICO
          ========================================================================= */}
-      <footer className="w-full px-6 py-4 border-t border-white/10 bg-black/30 text-xs text-blue-200/70 flex flex-col sm:flex-row items-center justify-between gap-3">
-        <div className="flex items-center gap-2 flex-wrap">
-          <span className="font-semibold text-white">AlmoxControl v2.4</span>
-          <span>•</span>
-          <span className="text-[#6EC1E4] font-mono">SQLite WAL Ativo</span>
-          <span>•</span>
-          <span className="text-blue-100/90 font-medium">Desenvolvido por Bruno Rocha</span>
-        </div>
-
-        {/* Operador Ativo e Botão para Trocar de Usuário via Logout */}
-        <div className="flex items-center gap-3 flex-wrap">
-          <div className="flex items-center gap-1.5 text-xs text-blue-100/90">
-            <span className="text-[11px] text-teal-200/70 uppercase tracking-wider font-bold">Operador Ativo:</span>
-            <span className="font-bold text-white">{currentUser.nome}</span>
-            <span className="text-blue-200/70">({getPerfilLabel(currentUser.perfil)})</span>
-          </div>
-
-          <button
-            type="button"
-            onClick={onLogout}
-            className="px-3 py-1.5 rounded-lg bg-white/10 hover:bg-rose-500/30 text-white border border-white/20 hover:border-rose-400/40 text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer"
-            title="Deslogar da sessão atual para acessar com outro usuário"
-          >
-            <LogOut className="w-3.5 h-3.5" />
-            <span>Deslogar / Trocar Usuário</span>
-          </button>
-        </div>
+      <footer className="w-full py-4 text-center border-t border-white/10 bg-black/20 text-xs text-slate-400 font-normal">
+        Desenvolvido por Bruno Rocha - DPO
       </footer>
     </div>
   );

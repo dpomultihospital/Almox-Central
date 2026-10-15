@@ -612,6 +612,18 @@ export function ensureFornecedoresSchema() {
       db.exec('ALTER TABLE movimentacoes ADD COLUMN emprestimo_institucional_id INTEGER;');
     }
 
+    // Garante coluna centro_custo_id em lotes_estoque
+    const lotesCols = db.prepare("PRAGMA table_info('lotes_estoque')").all() as Array<{ name: string }>;
+    const lotesColNames = new Set(lotesCols.map((c) => c.name));
+    if (!lotesColNames.has('centro_custo_id')) {
+      db.exec('ALTER TABLE lotes_estoque ADD COLUMN centro_custo_id INTEGER REFERENCES centros_custo(id);');
+    }
+    try {
+      db.exec('CREATE INDEX IF NOT EXISTS idx_lotes_centro_custo ON lotes_estoque (centro_custo_id);');
+    } catch {
+      // index exists
+    }
+
     // Backfill lotes_estoque para produtos existentes com saldo > 0 que ainda não possuam lotes registrados
     const prodsSemLote = db.prepare(`
       SELECT p.id, p.quantidade_atual
@@ -1112,5 +1124,9 @@ export function resetDatabase() {
     }
   });
 
+  ensureFornecedoresSchema();
+  ensureRequisicaoAuditSchema();
+  ensureInventariosSchema();
+  ensureGruposProdutosSchema();
   updateOverdueLoans();
 }

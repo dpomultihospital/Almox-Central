@@ -315,10 +315,10 @@ export const LoginView: React.FC<LoginViewProps> = ({
             </div>
           </div>
 
-          {/* Rodapé e Créditos */}
+          {/* Rodapé Único */}
           <div className="mt-8 pt-4 text-center border-t border-slate-200">
-            <p className="text-[11px] text-slate-400 font-medium">
-              Desenvolvido por Bruno Rocha
+            <p className="text-xs text-slate-400 font-normal">
+              Desenvolvido por Bruno Rocha - DPO
             </p>
           </div>
         </div>

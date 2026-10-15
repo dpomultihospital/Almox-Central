@@ -1,6 +1,6 @@
 # AlmoxControl - Sistema Integrado de Gestão de Almoxarifado & Estoque
 
-> **Desenvolvido por Bruno Rocha**
+> **Desenvolvido por Bruno Rocha - DPO**
 
 ---
 

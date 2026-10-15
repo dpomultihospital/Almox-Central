@@ -47,6 +47,7 @@ export function upsertLoteEstoque(params: {
   documento_referencia?: string | null;
   marca?: string | null;
   nomenclatura_fornecedor?: string | null;
+  centro_custo_id?: number | null;
 }): { id: number; numero_lote: string; data_validade: string | null } {
   const loteNorm = params.numero_lote && String(params.numero_lote).trim()
     ? String(params.numero_lote).trim().toUpperCase()
@@ -56,13 +57,13 @@ export function upsertLoteEstoque(params: {
     : null;
 
   const existente = db.prepare(`
-    SELECT id, numero_lote, data_validade
+    SELECT id, numero_lote, data_validade, centro_custo_id
     FROM lotes_estoque
     WHERE produto_id = ?
       AND UPPER(numero_lote) = ?
       AND COALESCE(data_validade, '') = COALESCE(?, '')
     LIMIT 1
-  `).get(params.produto_id, loteNorm, validadeNorm || '') as { id: number; numero_lote: string; data_validade: string | null } | undefined;
+  `).get(params.produto_id, loteNorm, validadeNorm || '') as { id: number; numero_lote: string; data_validade: string | null; centro_custo_id: number | null } | undefined;
 
   if (existente) {
     db.prepare(`
@@ -72,7 +73,8 @@ export function upsertLoteEstoque(params: {
           fornecedor_id = COALESCE(?, fornecedor_id),
           documento_referencia = COALESCE(?, documento_referencia),
           marca = COALESCE(?, marca),
-          nomenclatura_fornecedor = COALESCE(?, nomenclatura_fornecedor)
+          nomenclatura_fornecedor = COALESCE(?, nomenclatura_fornecedor),
+          centro_custo_id = COALESCE(?, centro_custo_id)
       WHERE id = ?
     `).run(
       params.quantidade,
@@ -81,6 +83,7 @@ export function upsertLoteEstoque(params: {
       params.documento_referencia || null,
       params.marca || null,
       params.nomenclatura_fornecedor || null,
+      params.centro_custo_id || null,
       existente.id
     );
     return existente;
@@ -89,8 +92,8 @@ export function upsertLoteEstoque(params: {
   const info = db.prepare(`
     INSERT INTO lotes_estoque (
       produto_id, numero_lote, data_validade, quantidade_inicial, quantidade_atual,
-      fornecedor_id, documento_referencia, marca, nomenclatura_fornecedor
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      fornecedor_id, documento_referencia, marca, nomenclatura_fornecedor, centro_custo_id
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     params.produto_id,
     loteNorm,
@@ -100,7 +103,8 @@ export function upsertLoteEstoque(params: {
     params.fornecedor_id || null,
     params.documento_referencia || null,
     params.marca || null,
-    params.nomenclatura_fornecedor || null
+    params.nomenclatura_fornecedor || null,
+    params.centro_custo_id || null
   );
 
   return {
@@ -564,23 +568,32 @@ apiRouter.post('/centros-custo', (req, res) => {
     return;
   }
 
-  const { codigo, nome, departamento, responsavel, empresa_id } = req.body;
-  if (!codigo || !nome || !departamento || !responsavel) {
-    res.status(400).json({ error: 'Todos os campos (código, nome, departamento, responsável) são obrigatórios' });
+  const { codigo, nome, departamento, responsavel, empresa_id, ativo } = req.body;
+  const codLimpo = String(codigo || '').trim();
+
+  if (!codLimpo || !/^\d+$/.test(codLimpo)) {
+    res.status(400).json({ error: 'O código do Centro de Custo é obrigatório e deve ser estritamente numérico (ex: 101, 102).' });
+    return;
+  }
+
+  if (!nome || !String(nome).trim()) {
+    res.status(400).json({ error: 'O nome do Centro de Custo é obrigatório.' });
     return;
   }
 
   try {
     const stmt = db.prepare(`
       INSERT INTO centros_custo (codigo, nome, departamento, responsavel, empresa_id, ativo)
-      VALUES (?, ?, ?, ?, ?, 1)
+      VALUES (?, ?, ?, ?, ?, ?)
     `);
+    const statusAtivo = ativo === 0 || ativo === false || ativo === '0' || ativo === 'Não' ? 0 : 1;
     const info = stmt.run(
-      codigo.trim().toUpperCase(), 
-      nome.trim(), 
-      departamento.trim(), 
-      responsavel.trim(),
-      empresa_id ? Number(empresa_id) : 1
+      codLimpo, 
+      String(nome).trim(), 
+      departamento && String(departamento).trim() ? String(departamento).trim() : String(nome).trim(), 
+      responsavel ? String(responsavel).trim() : '',
+      empresa_id ? Number(empresa_id) : 1,
+      statusAtivo
     );
     const novo = db.prepare(`
       SELECT cc.*, eu.nome as empresa_nome 
@@ -591,7 +604,7 @@ apiRouter.post('/centros-custo', (req, res) => {
     res.status(201).json(novo);
   } catch (err: any) {
     if (err.message?.includes('UNIQUE constraint failed')) {
-      res.status(409).json({ error: 'Já existe um Centro de Custo com este código' });
+      res.status(409).json({ error: `Já existe um Centro de Custo cadastrado com o código "${codLimpo}".` });
       return;
     }
     res.status(500).json({ error: 'Erro ao cadastrar Centro de Custo: ' + err.message });
@@ -607,19 +620,31 @@ apiRouter.put('/centros-custo/:id', (req, res) => {
 
   const { id } = req.params;
   const { codigo, nome, departamento, responsavel, empresa_id, ativo } = req.body;
+  const codLimpo = String(codigo || '').trim();
+
+  if (!codLimpo || !/^\d+$/.test(codLimpo)) {
+    res.status(400).json({ error: 'O código do Centro de Custo deve ser numérico.' });
+    return;
+  }
+
+  if (!nome || !String(nome).trim()) {
+    res.status(400).json({ error: 'O nome do Centro de Custo é obrigatório.' });
+    return;
+  }
 
   try {
+    const statusAtivo = ativo === 0 || ativo === false || ativo === '0' || ativo === 'Não' ? 0 : 1;
     db.prepare(`
       UPDATE centros_custo
       SET codigo = ?, nome = ?, departamento = ?, responsavel = ?, empresa_id = ?, ativo = ?
       WHERE id = ?
     `).run(
-      codigo.trim().toUpperCase(),
-      nome.trim(),
-      departamento.trim(),
-      responsavel.trim(),
+      codLimpo,
+      String(nome).trim(),
+      departamento && String(departamento).trim() ? String(departamento).trim() : String(nome).trim(),
+      responsavel ? String(responsavel).trim() : '',
       empresa_id ? Number(empresa_id) : 1,
-      ativo === 0 || ativo === false ? 0 : 1,
+      statusAtivo,
       id
     );
 
@@ -631,6 +656,10 @@ apiRouter.put('/centros-custo/:id', (req, res) => {
     `).get(id);
     res.json(atualizado);
   } catch (err: any) {
+    if (err.message?.includes('UNIQUE constraint failed')) {
+      res.status(409).json({ error: `Já existe outro Centro de Custo com o código "${codLimpo}".` });
+      return;
+    }
     res.status(500).json({ error: 'Erro ao atualizar Centro de Custo: ' + err.message });
   }
 });
@@ -643,7 +672,7 @@ apiRouter.patch('/centros-custo/:id/toggle', (req, res) => {
   }
 
   const { id } = req.params;
-  const atual = db.prepare('SELECT ativo FROM centros_custo WHERE id = ?').get(id) as { ativo: number } | undefined;
+  const atual = db.prepare('SELECT ativo, nome FROM centros_custo WHERE id = ?').get(id) as { ativo: number; nome: string } | undefined;
   if (!atual) {
     res.status(404).json({ error: 'Centro de custo não encontrado' });
     return;
@@ -651,7 +680,7 @@ apiRouter.patch('/centros-custo/:id/toggle', (req, res) => {
 
   const novoAtivo = atual.ativo === 1 ? 0 : 1;
   db.prepare('UPDATE centros_custo SET ativo = ? WHERE id = ?').run(novoAtivo, id);
-  res.json({ id, ativo: novoAtivo, message: novoAtivo ? 'Centro ativado' : 'Centro inativado' });
+  res.json({ id, ativo: novoAtivo, message: novoAtivo ? `Centro de Custo "${atual.nome}" ativado com sucesso.` : `Centro de Custo "${atual.nome}" inativado com sucesso.` });
 });
 
 apiRouter.delete('/centros-custo/:id', (req, res) => {
@@ -668,40 +697,30 @@ apiRouter.delete('/centros-custo/:id', (req, res) => {
     return;
   }
 
-  const reqPendentes = db.prepare(
-    "SELECT COUNT(*) as count FROM requisicoes WHERE centro_custo_id = ? AND status = 'pendente'"
-  ).get(id) as { count: number };
-  if (reqPendentes.count > 0) {
-    res.status(400).json({
-      error: `Não é possível excluir o setor "${cc.nome}" pois existem ${reqPendentes.count} requisição(ões) pendente(s) vinculada(s).`,
-    });
-    return;
-  }
+  // Regra expressa: Exclusão só se não houver movimentações, requisições, inventários ou usuários vinculados. Caso contrário, só inativar.
+  const movCount = db.prepare('SELECT COUNT(*) as count FROM movimentacoes WHERE centro_custo_id = ?').get(id) as { count: number };
+  const reqCount = db.prepare('SELECT COUNT(*) as count FROM requisicoes WHERE centro_custo_id = ?').get(id) as { count: number };
+  const invCount = db.prepare('SELECT COUNT(*) as count FROM inventarios_estoque WHERE centro_custo_id = ?').get(id) as { count: number };
+  const usrCount = db.prepare('SELECT COUNT(*) as count FROM usuarios WHERE centro_custo_id = ?').get(id) as { count: number };
+  const empCount = db.prepare('SELECT COUNT(*) as count FROM emprestimos WHERE centro_custo_id = ?').get(id) as { count: number };
 
-  const empAtivos = db.prepare(
-    "SELECT COUNT(*) as count FROM emprestimos WHERE centro_custo_id = ? AND status IN ('emprestado', 'atrasado')"
-  ).get(id) as { count: number };
-  if (empAtivos.count > 0) {
+  const motivos: string[] = [];
+  if (movCount?.count > 0) motivos.push(`${movCount.count} movimentação(ões) no histórico`);
+  if (reqCount?.count > 0) motivos.push(`${reqCount.count} requisição(ões)`);
+  if (invCount?.count > 0) motivos.push(`${invCount.count} inventário(s)`);
+  if (usrCount?.count > 0) motivos.push(`${usrCount.count} usuário(s)`);
+  if (empCount?.count > 0) motivos.push(`${empCount.count} empréstimo(s)`);
+
+  if (motivos.length > 0) {
     res.status(400).json({
-      error: `Não é possível excluir o setor "${cc.nome}" pois existem ${empAtivos.count} equipamento(s) emprestado(s) em aberto.`,
+      error: `Não é possível excluir o Centro de Custo "${cc.nome}" pois existem registros vinculados (${motivos.join(', ')}). Para preservar a integridade histórica e a auditoria do almoxarifado, o Centro de Custo deve ser apenas inativado.`,
+      canInactivate: true,
     });
     return;
   }
 
   try {
-    runInTransaction(() => {
-      db.prepare('UPDATE usuarios SET centro_custo_id = NULL WHERE centro_custo_id = ?').run(id);
-      db.prepare('UPDATE movimentacoes SET centro_custo_id = NULL WHERE centro_custo_id = ?').run(id);
-      const reqIds = db.prepare('SELECT id FROM requisicoes WHERE centro_custo_id = ?').all(id) as Array<{ id: number }>;
-      for (const r of reqIds) {
-        db.prepare('DELETE FROM historico_requisicoes WHERE requisicao_id = ?').run(r.id);
-        db.prepare('DELETE FROM itens_requisicao WHERE requisicao_id = ?').run(r.id);
-      }
-      db.prepare('DELETE FROM requisicoes WHERE centro_custo_id = ?').run(id);
-      db.prepare('DELETE FROM emprestimos WHERE centro_custo_id = ?').run(id);
-      db.prepare('DELETE FROM centros_custo WHERE id = ?').run(id);
-    });
-
+    db.prepare('DELETE FROM centros_custo WHERE id = ?').run(id);
     res.json({
       id: Number(id),
       message: `Centro de Custo "${cc.codigo} - ${cc.nome}" excluído com sucesso.`,
@@ -1352,8 +1371,11 @@ apiRouter.get('/produtos', (req, res) => {
     const lotesRows = db.prepare(`
       SELECT 
         le.*,
+        COALESCE(cc.nome, 'Almoxarifado Central') as centro_custo_nome,
+        cc.codigo as centro_custo_codigo,
         COALESCE(f.nome_fantasia, f.razao_social) as fornecedor_nome
       FROM lotes_estoque le
+      LEFT JOIN centros_custo cc ON le.centro_custo_id = cc.id
       LEFT JOIN fornecedores f ON le.fornecedor_id = f.id
       WHERE le.quantidade_atual > 0
       ORDER BY CASE WHEN le.data_validade IS NULL THEN 1 ELSE 0 END ASC, le.data_validade ASC, le.id ASC
@@ -1672,6 +1694,7 @@ apiRouter.post('/entradas', (req, res) => {
     marca,
     nomenclatura_fornecedor,
     codigo_referencia_fornecedor,
+    centro_custo_id,
     itens,
   } = req.body;
 
@@ -1733,13 +1756,15 @@ apiRouter.post('/entradas', (req, res) => {
       const movsCriadas: number[] = [];
       const produtosAtualizados: any[] = [];
 
+      const targetCentroCustoId = centro_custo_id ? Number(centro_custo_id) : null;
+
       const movStmt = db.prepare(`
         INSERT INTO movimentacoes (
           tipo, motivo_diverso, produto_id, lote_id, quantidade, centro_custo_id, fornecedor_id, usuario_id,
           responsavel_nome, documento_referencia, numero_lote, data_validade, valor_unitario,
           marca, nomenclatura_fornecedor, observacao
         )
-        VALUES ('entrada', 'Entrada por Nota Fiscal', ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES ('entrada', 'Entrada por Nota Fiscal', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
 
       for (const item of listaItens) {
@@ -1776,6 +1801,7 @@ apiRouter.post('/entradas', (req, res) => {
           documento_referencia: docRefUpper,
           marca: itemMarca,
           nomenclatura_fornecedor: itemNomenclatura,
+          centro_custo_id: targetCentroCustoId,
         });
 
         // 3. Soma saldo no mesmo código único de produto no estoque, independente de marca ou nomenclatura na NF
@@ -1831,6 +1857,7 @@ apiRouter.post('/entradas', (req, res) => {
           prodId,
           loteReg.id,
           qtd,
+          targetCentroCustoId,
           fornRow ? fornRow.id : null,
           user.id,
           user.nome,
@@ -4077,35 +4104,41 @@ apiRouter.post('/relatorios/executar', (req, res) => {
           FROM produtos p
           LEFT JOIN grupos_produtos gp ON p.grupo_id = gp.id
           LEFT JOIN movimentacoes m ON m.produto_id = p.id AND m.tipo IN ('saida', 'estorno_saida')
-          WHERE p.ativo = 1
         `;
+        const joinConditions: string[] = [];
+        const whereConditions: string[] = ['p.ativo = 1'];
         const params: any[] = [];
 
         if (centro_custo_id) {
-          sql += ' AND (m.centro_custo_id = ? OR m.centro_custo_id IS NULL)';
+          joinConditions.push('m.centro_custo_id = ?');
           params.push(Number(centro_custo_id));
         }
 
-        if (grupo_id) {
-          sql += ' AND p.grupo_id = ?';
-          params.push(Number(grupo_id));
-        }
-
-        if (tipo_produto) {
-          sql += ' AND p.tipo = ?';
-          params.push(tipo_produto);
-        }
-
         if (data_inicio) {
-          sql += ' AND (date(m.data_movimentacao) >= date(?) OR m.data_movimentacao IS NULL)';
+          joinConditions.push('date(m.data_movimentacao) >= date(?)');
           params.push(data_inicio);
         }
 
         if (data_fim) {
-          sql += ' AND (date(m.data_movimentacao) <= date(?) OR m.data_movimentacao IS NULL)';
+          joinConditions.push('date(m.data_movimentacao) <= date(?)');
           params.push(data_fim);
         }
 
+        if (joinConditions.length > 0) {
+          sql += ' AND ' + joinConditions.join(' AND ');
+        }
+
+        if (grupo_id) {
+          whereConditions.push('p.grupo_id = ?');
+          params.push(Number(grupo_id));
+        }
+
+        if (tipo_produto) {
+          whereConditions.push('p.tipo = ?');
+          params.push(tipo_produto);
+        }
+
+        sql += ' WHERE ' + whereConditions.join(' AND ');
         sql += ' GROUP BY p.id';
 
         const rows = db.prepare(sql).all(...params) as any[];
@@ -5798,3 +5831,251 @@ apiRouter.delete('/inventarios/:id', (req, res) => {
     res.status(500).json({ error: 'Erro ao excluir inventário: ' + err.message });
   }
 });
+
+// ============================================================================
+// 9. IMPORTAÇÃO DE CADASTROS (PRODUTOS E FORNECEDORES / ENTIDADES)
+// ============================================================================
+
+apiRouter.post('/importacao/produtos', (req, res) => {
+  const user = authenticateRequest(req);
+  if (!user || user.perfil !== 'admin') {
+    res.status(403).json({ error: 'Apenas Administradores podem importar cadastros de produtos.' });
+    return;
+  }
+
+  const { produtos } = req.body;
+  if (!Array.isArray(produtos) || produtos.length === 0) {
+    res.status(400).json({ error: 'Nenhum registro de produto fornecido para importação.' });
+    return;
+  }
+
+  try {
+    const result = runInTransaction(() => {
+      const incluidos: any[] = [];
+      const ignorados: any[] = [];
+      const avisos: string[] = [];
+
+      // Mapeamento de grupos existentes
+      const todosGrupos = db.prepare('SELECT id, UPPER(nome) as nome_upper FROM grupos_produtos').all() as any[];
+      const grupoMap = new Map<string, number>();
+      for (const g of todosGrupos) {
+        grupoMap.set(g.nome_upper, g.id);
+      }
+
+      const stmtCheckProd = db.prepare('SELECT id, codigo, nome FROM produtos WHERE UPPER(codigo) = UPPER(?)');
+      const stmtInsertGrupo = db.prepare(`
+        INSERT INTO grupos_produtos (codigo, nome, tipo_padrao, ativo)
+        VALUES (?, ?, ?, 1)
+      `);
+      const stmtInsertProd = db.prepare(`
+        INSERT INTO produtos (
+          codigo, nome, descricao, grupo_id, unidade_medida, tipo, controla_validade,
+          estoque_minimo, estoque_maximo, quantidade_atual, valor_unitario, custo_unitario, ativo
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, 0, ?, ?, 1)
+      `);
+
+      for (let i = 0; i < produtos.length; i++) {
+        const item = produtos[i];
+        const rawCod = String(item.codigo || '').trim();
+        const rawDesc = String(item.nome || item.descricao || '').trim();
+        const rawUnd = String(item.unidade_medida || 'UN').trim().toUpperCase();
+        const rawCusto = item.custo_unitario !== undefined && item.custo_unitario !== null ? Number(item.custo_unitario) : 0;
+        const rawGrupoNome = String(item.grupo_nome || 'GERAL').trim();
+        const tipoFinal = item.tipo === 'nao_consumivel' ? 'nao_consumivel' : 'consumivel';
+
+        if (!rawCod || !rawDesc) {
+          avisos.push(`Linha ${i + 1}: Registro ignorado por falta de Código ou Descrição obrigatória.`);
+          continue;
+        }
+
+        // Verifica se já existe pelo código no banco
+        const existe = stmtCheckProd.get(rawCod) as any;
+        if (existe) {
+          ignorados.push({
+            codigo: rawCod,
+            nome: rawDesc,
+            motivo: `Código "${rawCod}" já cadastrado no catálogo (ID #${existe.id} - ${existe.nome}). Registro ignorado sem alteração.`,
+          });
+          continue;
+        }
+
+        // Resolução / criação do Grupo de Produto
+        let grupoId: number | null = null;
+        if (rawGrupoNome) {
+          const upperGrupo = rawGrupoNome.toUpperCase();
+          if (grupoMap.has(upperGrupo)) {
+            grupoId = grupoMap.get(upperGrupo)!;
+          } else {
+            const nextGrupoCod = `GRP-${Math.floor(100 + Math.random() * 900)}`;
+            const infoGrupo = stmtInsertGrupo.run(nextGrupoCod, rawGrupoNome, tipoFinal);
+            grupoId = Number(infoGrupo.lastInsertRowid);
+            grupoMap.set(upperGrupo, grupoId);
+          }
+        }
+
+        // Importação não gera saldo, lotes nem movimentações. Quantidade atual = 0.
+        const insertInfo = stmtInsertProd.run(
+          rawCod,
+          rawDesc,
+          item.descricao ? String(item.descricao).trim() : rawDesc,
+          grupoId,
+          rawUnd,
+          tipoFinal,
+          tipoFinal === 'consumivel' ? 1 : 0,
+          rawCusto,
+          rawCusto
+        );
+
+        incluidos.push({
+          id: Number(insertInfo.lastInsertRowid),
+          codigo: rawCod,
+          nome: rawDesc,
+          grupo: rawGrupoNome,
+          unidade: rawUnd,
+          custo: rawCusto,
+          tipo: tipoFinal,
+        });
+
+        if (rawCusto === 0) {
+          avisos.push(`Produto "${rawCod} - ${rawDesc}": cadastrado com Custo Unitário R$ 0,00.`);
+        }
+      }
+
+      return {
+        sucesso: true,
+        total_lidos: produtos.length,
+        total_incluidos: incluidos.length,
+        total_ignorados: ignorados.length,
+        incluidos,
+        ignorados,
+        avisos,
+      };
+    });
+
+    res.json(result);
+  } catch (err: any) {
+    res.status(500).json({ error: 'Falha transacional ao importar produtos: ' + err.message });
+  }
+});
+
+apiRouter.post('/importacao/fornecedores', (req, res) => {
+  const user = authenticateRequest(req);
+  if (!user || user.perfil !== 'admin') {
+    res.status(403).json({ error: 'Apenas Administradores podem importar fornecedores e entidades.' });
+    return;
+  }
+
+  const { fornecedores } = req.body;
+  if (!Array.isArray(fornecedores) || fornecedores.length === 0) {
+    res.status(400).json({ error: 'Nenhum registro de fornecedor fornecido para importação.' });
+    return;
+  }
+
+  try {
+    const result = runInTransaction(() => {
+      const incluidos: any[] = [];
+      const ignorados: any[] = [];
+      const avisos: string[] = [];
+
+      const stmtCheckCod = db.prepare('SELECT id, codigo, razao_social FROM fornecedores WHERE UPPER(codigo) = UPPER(?)');
+      const stmtCheckCnpj = db.prepare("SELECT id, codigo, razao_social FROM fornecedores WHERE cnpj = ? AND cnpj IS NOT NULL AND cnpj != ''");
+
+      const stmtInsertForn = db.prepare(`
+        INSERT INTO fornecedores (
+          codigo, razao_social, nome_fantasia, cnpj, tipo_entidade, inscricao_estadual,
+          telefone, email, contato_responsavel, endereco, cidade, uf, observacoes, ativo
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+      `);
+
+      for (let i = 0; i < fornecedores.length; i++) {
+        const item = fornecedores[i];
+        const rawCod = String(item.codigo || '').trim();
+        const rawNome = String(item.razao_social || item.nome || '').trim();
+        const rawFantasia = item.nome_fantasia && String(item.nome_fantasia).trim() ? String(item.nome_fantasia).trim() : null;
+        const rawCnpj = item.cnpj && String(item.cnpj).trim() ? String(item.cnpj).trim() : null;
+        const rawTipo = item.tipo_entidade === 'entidade_parceira' ? 'entidade_parceira' : 'fornecedor_comercial';
+        const rawIe = item.inscricao_estadual && String(item.inscricao_estadual).trim() ? String(item.inscricao_estadual).trim() : null;
+        const rawTel = item.telefone && String(item.telefone).trim() ? String(item.telefone).trim() : null;
+        const rawEmail = item.email && String(item.email).trim() ? String(item.email).trim() : null;
+        const rawContato = item.contato_responsavel && String(item.contato_responsavel).trim() ? String(item.contato_responsavel).trim() : null;
+        const rawEnd = item.endereco && String(item.endereco).trim() ? String(item.endereco).trim() : null;
+        const rawCid = item.cidade && String(item.cidade).trim() ? String(item.cidade).trim() : null;
+        const rawUf = item.uf && String(item.uf).trim() ? String(item.uf).trim().toUpperCase() : null;
+        const rawObs = item.observacoes && String(item.observacoes).trim() ? String(item.observacoes).trim() : null;
+
+        if (!rawCod || !rawNome) {
+          avisos.push(`Linha ${i + 1}: Fornecedor ignorado por ausência de Código ou Razão Social obrigatória.`);
+          continue;
+        }
+
+        // Verifica existência pelo código
+        const existeCod = stmtCheckCod.get(rawCod) as any;
+        if (existeCod) {
+          ignorados.push({
+            codigo: rawCod,
+            razao_social: rawNome,
+            motivo: `Código "${rawCod}" já existente no banco de dados (ID #${existeCod.id} - ${existeCod.razao_social}). Registro ignorado sem alterações.`,
+          });
+          continue;
+        }
+
+        // Se tiver CNPJ, verifica duplicidade de CNPJ
+        if (rawCnpj) {
+          const existeCnpj = stmtCheckCnpj.get(rawCnpj) as any;
+          if (existeCnpj) {
+            ignorados.push({
+              codigo: rawCod,
+              razao_social: rawNome,
+              motivo: `CNPJ "${rawCnpj}" já utilizado por outra entidade no sistema (Código: ${existeCnpj.codigo} - ${existeCnpj.razao_social}).`,
+            });
+            continue;
+          }
+        }
+
+        const insertInfo = stmtInsertForn.run(
+          rawCod,
+          rawNome,
+          rawFantasia,
+          rawCnpj,
+          rawTipo,
+          rawIe,
+          rawTel,
+          rawEmail,
+          rawContato,
+          rawEnd,
+          rawCid,
+          rawUf,
+          rawObs
+        );
+
+        incluidos.push({
+          id: Number(insertInfo.lastInsertRowid),
+          codigo: rawCod,
+          razao_social: rawNome,
+          cnpj: rawCnpj,
+          telefone: rawTel,
+          tipo: rawTipo,
+        });
+
+        if (!rawCnpj) {
+          avisos.push(`Fornecedor "${rawCod} - ${rawNome}": cadastrado sem CNPJ informado.`);
+        }
+      }
+
+      return {
+        sucesso: true,
+        total_lidos: fornecedores.length,
+        total_incluidos: incluidos.length,
+        total_ignorados: ignorados.length,
+        incluidos,
+        ignorados,
+        avisos,
+      };
+    });
+
+    res.json(result);
+  } catch (err: any) {
+    res.status(500).json({ error: 'Falha transacional ao importar fornecedores: ' + err.message });
+  }
+});
+

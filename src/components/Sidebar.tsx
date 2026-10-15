@@ -17,7 +17,9 @@ import {
   HardDriveDownload,
   Truck,
   PanelLeftClose,
-  Boxes
+  Boxes,
+  PackageCheck,
+  FileSpreadsheet
 } from 'lucide-react';
 import type { Usuario, EmpresaUnidade } from '../types/index.ts';
 
@@ -62,6 +64,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
       roles: ['admin', 'almoxarife', 'requisitante'],
     },
     {
+      id: 'saldo-estoque',
+      label: 'Consulta de Saldo em Estoque',
+      icon: PackageCheck,
+      roles: ['admin', 'almoxarife', 'requisitante'],
+    },
+    {
       id: 'entradas',
       label: 'Entrada por Nota Fiscal',
       icon: PackagePlus,
@@ -103,9 +111,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
     },
     {
       id: 'centros-custo',
-      label: 'Centro de Custo',
+      label: 'Centros de Custo',
       icon: Building2,
-      roles: ['admin', 'almoxarife', 'requisitante'],
+      roles: ['admin', 'almoxarife'],
     },
     {
       id: 'usuarios',
@@ -126,6 +134,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
       label: 'Perfil',
       icon: UserCheck,
       roles: ['admin', 'almoxarife', 'requisitante'],
+    },
+    {
+      id: 'importacao-cadastros',
+      label: 'Importação de Cadastros',
+      icon: FileSpreadsheet,
+      badge: 'Admin',
+      badgeType: 'indigo',
+      roles: ['admin'],
     },
     {
       id: 'backup',

@@ -593,12 +593,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         </div>
       </div>
 
-      {/* Rodapé e Créditos */}
-      <footer className="pt-4 pb-2 text-center border-t border-slate-200">
-        <p className="text-xs text-slate-400 font-medium">
-          Desenvolvido por Bruno Rocha
-        </p>
-      </footer>
     </div>
   );
 };

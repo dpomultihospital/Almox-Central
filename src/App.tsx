@@ -19,6 +19,8 @@ import { SecurityPasswordModal } from './components/SecurityPasswordModal.tsx';
 import { BackupView } from './components/BackupView.tsx';
 import { BackupConfirmationModal } from './components/BackupConfirmationModal.tsx';
 import { ConfirmDeleteModal } from './components/ConfirmDeleteModal.tsx';
+import { SaldoEstoqueView } from './components/SaldoEstoqueView.tsx';
+import { ImportacaoCadastrosView } from './components/ImportacaoCadastrosView.tsx';
 import { useToast } from './context/ToastContext.tsx';
 import type { 
   Usuario, 
@@ -343,7 +345,8 @@ export default function App() {
           />
         )}
 
-        <main className="flex-1 overflow-y-auto p-6">
+        <div className="flex-1 flex flex-col min-w-0 overflow-y-auto">
+          <main className="flex-1 p-6">
           {currentTab === 'requisicoes' && (
             <RequisicoesView
               requisicoes={requisicoes}
@@ -355,6 +358,7 @@ export default function App() {
               isCreateModalOpen={isNovaRequisicaoOpen}
               setIsCreateModalOpen={setIsNovaRequisicaoOpen}
               onVoltar={() => setIsGridView(true)}
+              onNavigate={(tab) => setCurrentTab(tab)}
             />
           )}
 
@@ -386,10 +390,22 @@ export default function App() {
             />
           )}
 
+          {currentTab === 'saldo-estoque' && (
+            <SaldoEstoqueView
+              produtos={produtos}
+              centrosCusto={centrosCusto}
+              movimentacoes={movimentacoes}
+              currentUser={currentUser}
+              onRefresh={loadData}
+              onVoltar={() => setIsGridView(true)}
+            />
+          )}
+
           {currentTab === 'entradas' && (
             <EntradasView
               produtos={produtos}
               fornecedores={fornecedores}
+              centrosCusto={centrosCusto}
               movimentacoes={movimentacoes}
               currentUser={currentUser}
               activeUnidade={activeUnidade}
@@ -431,6 +447,7 @@ export default function App() {
               produtos={produtos}
               onRefresh={loadData}
               onVoltar={() => setIsGridView(true)}
+              onNavigate={(tab) => setCurrentTab(tab)}
             />
           )}
 
@@ -452,6 +469,7 @@ export default function App() {
               currentUser={currentUser}
               onRefresh={loadData}
               onVoltar={() => setIsGridView(true)}
+              onNavigate={(tab) => setCurrentTab(tab)}
             />
           )}
 
@@ -463,6 +481,15 @@ export default function App() {
               stats={stats}
               activeUnidade={activeUnidade}
               currentUser={currentUser}
+              onVoltar={() => setIsGridView(true)}
+              onNavigate={(tab) => setCurrentTab(tab)}
+            />
+          )}
+
+          {currentTab === 'importacao-cadastros' && (
+            <ImportacaoCadastrosView
+              currentUser={currentUser}
+              onRefresh={loadData}
               onVoltar={() => setIsGridView(true)}
             />
           )}
@@ -491,7 +518,11 @@ export default function App() {
               onRefreshDb={handleResetDb}
             />
           )}
-        </main>
+          </main>
+          <footer className="py-3 px-6 text-center text-xs text-slate-400 font-normal border-t border-slate-200/60 bg-transparent print:hidden shrink-0">
+            Desenvolvido por Bruno Rocha - DPO
+          </footer>
+        </div>
       </div>
 
       {showSecurityModal && (
